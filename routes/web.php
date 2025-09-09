@@ -17,6 +17,7 @@ Route::middleware(['auth','profile.completed'])->group(function () {
     Volt::route('settings/profile', 'settings.profile')->name('settings.profile');
     Volt::route('settings/password', 'settings.password')->name('settings.password');
     Volt::route('settings/appearance', 'settings.appearance')->name('settings.appearance');
+    Volt::route('settings/archer-profile','settings.archer-profile')->name('settings.archer-profile');
 });
 
 // Onboarding Routes

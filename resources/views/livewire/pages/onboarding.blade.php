@@ -99,8 +99,15 @@ $save = function () {
 
                 {{-- Country dropdown --}}
                 <div class="flex-1">
+                    @php($countries = collect(config('countries.list'))->sort()->all())
                     <flux:label for="country" class="mb-1">Country</flux:label>
-                    <flux:input id="country" type="text" wire:model="country" placeholder="2-letter code (e.g. US)" />
+                    <flux:select id="country" wire:model="country" class="w-full">
+                        <option value="">{{ __('Select…') }}</option>
+                        @foreach($countries as $code => $name)
+                            <option value="{{ $code }}">{{ $name }}</option>
+                        @endforeach
+                    </flux:select>
+
                     @error('country') 
                         <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> 
                     @enderror

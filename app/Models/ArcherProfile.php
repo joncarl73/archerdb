@@ -12,5 +12,9 @@ class ArcherProfile extends Model
         'us_archery_number','country','completed_at',
     ];
 
+    protected $casts = [
+        'birth_date' => 'date',
+    ];
+
     public function user() { return $this->belongsTo(User::class); }
 }
