@@ -58,4 +58,10 @@ class User extends Authenticatable
             ->map(fn ($word) => Str::substr($word, 0, 1))
             ->implode('');
     }
+
+    public function archerProfile()
+    {
+        return $this->hasOne(\App\Models\ArcherProfile::class);
+    }
+
 }
