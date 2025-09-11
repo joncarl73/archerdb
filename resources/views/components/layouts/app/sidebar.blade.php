@@ -128,6 +128,37 @@
 
         {{ $slot }}
 
+        @once
+        <style>[x-cloak]{display:none!important}</style>
+
+        <div
+        x-data
+        x-on:toast.window="Alpine.store('toasts').add($event.detail)"
+        class="fixed bottom-4 right-4 z-[9999] space-y-3 pointer-events-none"
+        >
+        <template x-for="t in ($store.toasts?.items || [])" :key="t.id">
+            <div
+            x-transition.opacity.scale
+            class="pointer-events-auto rounded-xl px-4 py-3 shadow-xl ring-1 ring-black/10"
+            :class="{
+                'bg-emerald-600 text-white': t.type === 'success',
+                'bg-red-600 text-white': t.type === 'error',
+                'bg-amber-500 text-black': t.type === 'warning',
+                'bg-zinc-900 text-white': !['success','error','warning'].includes(t.type)
+            }"
+            >
+            <div class="flex items-start gap-3">
+                <div class="text-sm" x-text="t.message || 'Done'"></div>
+                <button class="ml-2 text-xs opacity-75 hover:opacity-100"
+                        @click="Alpine.store('toasts').remove(t.id)">✕</button>
+            </div>
+            </div>
+        </template>
+        </div>
+        @endonce
+
+
+
         @fluxScripts
     </body>
 </html>
