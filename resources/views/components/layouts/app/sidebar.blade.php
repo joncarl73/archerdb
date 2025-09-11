@@ -135,6 +135,7 @@
         x-data
         x-on:toast.window="Alpine.store('toasts').add($event.detail)"
         class="fixed bottom-4 right-4 z-[9999] space-y-3 pointer-events-none"
+        role="status" aria-live="polite" aria-atomic="true"
         >
         <template x-for="t in ($store.toasts?.items || [])" :key="t.id">
             <div
@@ -147,15 +148,31 @@
                 'bg-zinc-900 text-white': !['success','error','warning'].includes(t.type)
             }"
             >
-            <div class="flex items-start gap-3">
-                <div class="text-sm" x-text="t.message || 'Done'"></div>
-                <button class="ml-2 text-xs opacity-75 hover:opacity-100"
-                        @click="Alpine.store('toasts').remove(t.id)">✕</button>
+            <div class="flex items-center gap-3">
+                <div class="text-sm grow" x-text="t.message || 'Done'"></div>
+
+                <!-- Optional action (e.g., Undo) -->
+                <template x-if="t.action && t.action.label && t.action.event">
+                <button
+                    class="rounded-lg px-2 py-1 text-xs font-semibold ring-1 ring-white/20 hover:bg-white/10"
+                    @click="
+                    window.dispatchEvent(new CustomEvent(t.action.event, { detail: t.action.payload || {} }));
+                    Alpine.store('toasts').remove(t.id);
+                    "
+                    x-text="t.action.label"
+                ></button>
+                </template>
+
+                <button
+                class="ml-1 text-xs opacity-75 hover:opacity-100"
+                @click="Alpine.store('toasts').remove(t.id)"
+                >✕</button>
             </div>
             </div>
         </template>
         </div>
         @endonce
+
 
 
 

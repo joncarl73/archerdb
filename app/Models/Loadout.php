@@ -3,10 +3,13 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Loadout extends Model
 {
-    protected $fillable = ['user_id','name','is_primary','notes'];
+    use SoftDeletes;
+
+    protected $fillable = ['user_id','name','is_primary','bow_type','notes'];
 
     public function user()
     {
@@ -17,4 +20,11 @@ class Loadout extends Model
     {
         return $this->hasMany(LoadoutItem::class)->orderBy('position');
     }
+
+    protected static function booted()
+    {
+        static::deleting(fn($loadout) => $loadout->items()->delete());
+        static::restoring(fn($loadout) => $loadout->items()->withTrashed()->restore());
+    }
+
 }
