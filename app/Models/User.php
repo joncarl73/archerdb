@@ -64,4 +64,8 @@ class User extends Authenticatable
         return $this->hasOne(\App\Models\ArcherProfile::class);
     }
 
+    public function loadouts() {
+        return $this->hasMany(\App\Models\Loadout::class);
+    }
+
 }

@@ -18,6 +18,9 @@ Route::middleware(['auth','profile.completed'])->group(function () {
     Volt::route('settings/password', 'settings.password')->name('settings.password');
     Volt::route('settings/appearance', 'settings.appearance')->name('settings.appearance');
     Volt::route('settings/archer-profile','settings.archer-profile')->name('settings.archer-profile');
+
+    // Gear Loadout Routes
+    Volt::route('gear/loadouts','gear.loadouts')->name('gear.loadouts');
 });
 
 // Onboarding Routes
