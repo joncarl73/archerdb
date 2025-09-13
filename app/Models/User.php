@@ -6,6 +6,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 use App\Enums\UserRole;
 
@@ -71,6 +72,11 @@ class User extends Authenticatable
 
     public function loadouts() {
         return $this->hasMany(\App\Models\Loadout::class);
+    }
+
+    public function trainingSessions(): HasMany
+    {
+        return $this->hasMany(\App\Models\TrainingSession::class);
     }
 
 }

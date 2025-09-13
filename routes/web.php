@@ -21,6 +21,10 @@ Route::middleware(['auth','profile.completed'])->group(function () {
 
     // Gear Loadout Routes
     Volt::route('gear/loadouts','gear.loadouts')->name('gear.loadouts');
+
+    // Personal Training Routes
+    Volt::route('/training','training.index')->name('training.index');
+    Volt::route('/training/{session}/record','training.record')->name('training.record')->whereNumber('session');
 });
 
 // Onboarding Routes
@@ -34,6 +38,20 @@ Route::middleware(['auth','admin'])
         Volt::route('users','admin.users')->name('users');
         Volt::route('manufacturers','admin.manufacturers')->name('manufacturers');
     });
+
+
+// Stop Impersonation Route
+// routes/web.php
+Route::middleware(['auth'])->group(function () {
+    Route::post('/impersonation/stop', function () {
+        $orig = session()->pull('impersonator_id');
+        if ($orig) {
+            \Illuminate\Support\Facades\Auth::loginUsingId($orig);
+        }
+        return redirect()->route('admin.users');
+    })->name('impersonate.stop');
+});
+
 
 
 require __DIR__.'/auth.php';

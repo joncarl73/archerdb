@@ -4,6 +4,29 @@
         @include('partials.head')
     </head>
     <body class="min-h-screen bg-white dark:bg-zinc-800">
+        {{--  Impersonation Top bar --}}
+
+
+        @if (session('impersonator_id'))
+        <div class="sticky top-0 z-[1000] bg-amber-500 text-black">
+            <div class="mx-auto max-w-7xl px-4 py-2 flex items-center justify-between">
+            <div class="text-sm font-medium">
+                You are impersonating
+                <span class="font-semibold">{{ auth()->user()->name }}</span>.
+            </div>
+            <form method="POST" action="{{ route('impersonate.stop') }}">
+                @csrf
+                <button
+                class="rounded-md bg-black/10 px-3 py-1 text-sm font-semibold hover:bg-black/20"
+                type="submit"
+                >
+                Stop impersonating
+                </button>
+            </form>
+            </div>
+        </div>
+        @endif
+
         <flux:sidebar sticky stashable class="border-e border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
             <flux:sidebar.toggle class="lg:hidden" icon="x-mark" />
 
@@ -26,6 +49,14 @@
                         :current="request()->routeIs('gear.loadouts')"
                         wire:navigate
                     >{{ __('Loadouts') }}</flux:navlist.item>
+
+                    <flux:navlist.item icon="arrow-right-start-on-rectangle"
+                        :href="route('training.index')"
+                        :current="request()->routeIs('training.index')"
+                        wire:navigate>
+                    {{ __('Training') }}
+                    </flux:navlist.item>
+
                 </flux:navlist.group>
 
                 @php($isAdmin = auth()->check() && (

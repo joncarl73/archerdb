@@ -1,75 +1,102 @@
 <?php
+use App\Models\Loadout;
+use App\Models\Manufacturer;
 use Illuminate\Support\Facades\Auth;
+use Livewire\Attributes\On;
 use Livewire\Volt\Component;
 use Livewire\WithPagination;
-use Livewire\Attributes\On;
-use App\Models\{Loadout, LoadoutItem, Manufacturer};
 
-new class extends Component {
+new class extends Component
+{
     use WithPagination;
 
     // pagination
     protected string $pageName = 'loadoutsPage';
+
     public int $perPage = 5;
 
     // sorting
     public string $sort = 'updated_at';
+
     public string $direction = 'desc';
 
     // sheet form state
     public bool $showSheet = false;
+
     public ?int $editingId = null;
 
     // loadout fields
     public string $name = '';
+
     public bool $is_primary = false;
+
     public ?string $bow_type = null; // recurve | compound | longbow
+
     public string $notes = '';
 
     // Bow fields
     public ?int $bow_manufacturer_id = null;
+
     public string $bow_model = '';
+
     public ?int $bow_draw_weight = null; // lbs
+
     public string $bow_notes = '';
 
     // Arrow fields
     public ?int $arrow_manufacturer_id = null;
+
     public string $arrow_model = '';
+
     public string $arrow_spine = '';
+
     public ?float $arrow_length = null; // inches
 
     // Sight
     public ?int $sight_manufacturer_id = null;
+
     public string $sight_model = '';
 
     // Scope (typically compound)
     public ?int $scope_manufacturer_id = null;
+
     public string $scope_model = '';
 
     // Rest
     public ?int $rest_manufacturer_id = null;
+
     public string $rest_model = '';
 
     // Stabilizers
     public ?int $stabilizer_manufacturer_id = null;
+
     public string $stabilizer_model = '';
 
     // Plunger (typically recurve)
     public ?int $plunger_manufacturer_id = null;
+
     public string $plunger_model = '';
 
     // Release (typically compound)
     public ?int $release_manufacturer_id = null;
+
     public string $release_model = '';
 
     // dropdown lists
     public array $bowManufacturers = [];
+
     public array $arrowManufacturers = [];
+
     public array $sightManufacturers = [];
+
     public array $scopeManufacturers = [];
+
     public array $restManufacturers = [];
+
     public array $stabilizerManufacturers = [];
+
     public array $plungerManufacturers = [];
+
     public array $releaseManufacturers = [];
 
     // Undo support
@@ -80,44 +107,61 @@ new class extends Component {
         // preload manufacturer dropdowns by category
         $this->bowManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'bow')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->arrowManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'arrow')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->sightManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'sight')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->scopeManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'scope')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->restManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'rest')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->stabilizerManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'stabilizer')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->plungerManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'plunger')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
 
         $this->releaseManufacturers = Manufacturer::query()
             ->whereJsonContains('categories', 'release')
-            ->orderBy('name')->get(['id','name'])->toArray();
+            ->orderBy('name')->get(['id', 'name'])->toArray();
     }
 
-    public function updatingSort()     { $this->resetPage($this->pageName); }
-    public function updatingDirection(){ $this->resetPage($this->pageName); }
+    public function updatingSort()
+    {
+        $this->resetPage($this->pageName);
+    }
 
-    public function goto(int $page): void { $this->gotoPage($page, $this->pageName); }
-    public function prevPage(): void      { $this->previousPage($this->pageName); }
-    public function nextPage(): void      { $this->nextPage($this->pageName); }
+    public function updatingDirection()
+    {
+        $this->resetPage($this->pageName);
+    }
 
+    public function goto(int $page): void
+    {
+        $this->gotoPage($page, $this->pageName);
+    }
+
+    public function prevPage(): void
+    {
+        $this->previousPage($this->pageName);
+    }
+
+    public function nextPage(): void
+    {
+        $this->nextPage($this->pageName);
+    }
 
     // --- Inline actions ---
     public function makePrimary(int $id): void
@@ -126,11 +170,10 @@ new class extends Component {
         $loadout = $user->loadouts()->findOrFail($id);
         $user->loadouts()->update(['is_primary' => false]);
         $loadout->update(['is_primary' => true]);
-        $this->dispatch('toast', type:'success', message:'Primary updated');
+        $this->dispatch('toast', type: 'success', message: 'Primary updated');
     }
 
-
-        /** One-click delete with undo toast */
+    /** One-click delete with undo toast */
     public function delete(int $id): void
     {
         $user = Auth::user();
@@ -147,80 +190,76 @@ new class extends Component {
         }
 
         $this->lastDeleted = [
-            'id'          => $loadout->id,
+            'id' => $loadout->id,
             'was_primary' => $wasPrimary,
         ];
 
         $this->dispatch('toast',
             type: 'success',
             message: 'Loadout deleted',
-            duration: 6000,
-            action: [
-                'label'   => 'Undo',
-                'event'   => 'undo-loadout',
-                'payload' => ['id' => $loadout->id],
-            ],
+            duration: 4000,
         );
     }
-
 
     #[On('undo-loadout')]
     public function undoDelete(int $id): void
     {
         $user = Auth::user();
-        if (!$this->lastDeleted || ($this->lastDeleted['id'] ?? null) !== $id) return;
+        if (! $this->lastDeleted || ($this->lastDeleted['id'] ?? null) !== $id) {
+            return;
+        }
 
         $restored = $user->loadouts()->withTrashed()->findOrFail($id);
         if ($restored->trashed()) {
             $restored->restore();
         }
 
-        if (!empty($this->lastDeleted['was_primary'])) {
+        if (! empty($this->lastDeleted['was_primary'])) {
             $user->loadouts()->update(['is_primary' => false]);
             $restored->update(['is_primary' => true]);
         }
 
         $this->lastDeleted = null;
-        $this->dispatch('toast', type:'success', message:'Undo complete', duration:2500);
+        $this->dispatch('toast', type: 'success', message: 'Undo complete', duration: 2500);
     }
 
-public function getLoadoutsProperty()
-{
-    // Base query (no pagination yet)
-    $base = Auth::user()
-        ->loadouts()
-        ->orderBy($this->sort, $this->direction);
+    public function getLoadoutsProperty()
+    {
+        // Base query (no pagination yet)
+        $base = Auth::user()
+            ->loadouts()
+            ->orderBy($this->sort, $this->direction);
 
-    // Compute last valid page
-    $total    = (clone $base)->count();
-    $lastPage = max(1, (int) ceil($total / $this->perPage));
+        // Compute last valid page
+        $total = (clone $base)->count();
+        $lastPage = max(1, (int) ceil($total / $this->perPage));
 
-    // ✅ Use Livewire’s internal paginator state (not the URL)
-    $requested = (int) ($this->paginators[$this->pageName] ?? 1);
-    $page = min(max(1, $requested), $lastPage);
+        // ✅ Use Livewire’s internal paginator state (not the URL)
+        $requested = (int) ($this->paginators[$this->pageName] ?? 1);
+        $page = min(max(1, $requested), $lastPage);
 
-    // If out of range (e.g., after deleting the only item on page 2), fix state + URL
-    if ($requested !== $page) {
-        $this->setPage($page, $this->pageName);
+        // If out of range (e.g., after deleting the only item on page 2), fix state + URL
+        if ($requested !== $page) {
+            $this->setPage($page, $this->pageName);
+        }
+
+        // Paginate on the clamped page
+        return $base
+            ->withCount('items')
+            ->paginate($this->perPage, ['*'], $this->pageName, $page);
     }
-
-    // Paginate on the clamped page
-    return $base
-        ->withCount('items')
-        ->paginate($this->perPage, ['*'], $this->pageName, $page);
-}
-
 
     /** Paging window for page buttons */
     public function getPageWindowProperty(): array
     {
         $p = $this->loadouts;
-        $window  = 2;
+        $window = 2;
         $current = max(1, (int) $p->currentPage());
-        $last    = max(1, (int) $p->lastPage());
-        $start   = max(1, $current - $window);
-        $end     = min($last, $current + $window);
-        return compact('current','last','start','end');
+        $last = max(1, (int) $p->lastPage());
+        $start = max(1, $current - $window);
+        $end = min($last, $current + $window);
+
+        return compact('current', 'last', 'start', 'end');
     }
 
     /** Open empty create form */
@@ -242,42 +281,42 @@ public function getLoadoutsProperty()
         $this->notes = (string) ($loadout->notes ?? '');
 
         // Map items -> fields
-        $bow        = $loadout->items->firstWhere('category','bow');
-        $arrow      = $loadout->items->firstWhere('category','arrow');
-        $sight      = $loadout->items->firstWhere('category','sight');
-        $scope      = $loadout->items->firstWhere('category','scope');
-        $rest       = $loadout->items->firstWhere('category','rest');
-        $stabilizer = $loadout->items->firstWhere('category','stabilizer');
-        $plunger    = $loadout->items->firstWhere('category','plunger');
-        $release    = $loadout->items->firstWhere('category','release');
+        $bow = $loadout->items->firstWhere('category', 'bow');
+        $arrow = $loadout->items->firstWhere('category', 'arrow');
+        $sight = $loadout->items->firstWhere('category', 'sight');
+        $scope = $loadout->items->firstWhere('category', 'scope');
+        $rest = $loadout->items->firstWhere('category', 'rest');
+        $stabilizer = $loadout->items->firstWhere('category', 'stabilizer');
+        $plunger = $loadout->items->firstWhere('category', 'plunger');
+        $release = $loadout->items->firstWhere('category', 'release');
 
         // Bow
         $this->bow_manufacturer_id = $bow?->manufacturer_id;
-        $this->bow_model           = $bow?->model ?? '';
-        $this->bow_draw_weight     = $bow?->specs['draw_weight'] ?? null;
-        $this->bow_notes           = $bow?->specs['notes'] ?? '';
+        $this->bow_model = $bow?->model ?? '';
+        $this->bow_draw_weight = $bow?->specs['draw_weight'] ?? null;
+        $this->bow_notes = $bow?->specs['notes'] ?? '';
 
         // Arrows
         $this->arrow_manufacturer_id = $arrow?->manufacturer_id;
-        $this->arrow_model           = $arrow?->model ?? '';
-        $this->arrow_spine           = $arrow?->specs['spine'] ?? '';
-        $this->arrow_length          = $arrow?->specs['length'] ?? null;
+        $this->arrow_model = $arrow?->model ?? '';
+        $this->arrow_spine = $arrow?->specs['spine'] ?? '';
+        $this->arrow_length = $arrow?->specs['length'] ?? null;
 
         // Sight/Scope
         $this->sight_manufacturer_id = $sight?->manufacturer_id;
-        $this->sight_model           = $sight?->model ?? '';
+        $this->sight_model = $sight?->model ?? '';
         $this->scope_manufacturer_id = $scope?->manufacturer_id;
-        $this->scope_model           = $scope?->model ?? '';
+        $this->scope_model = $scope?->model ?? '';
 
         // Rest / Stabilizers / Plunger / Release
-        $this->rest_manufacturer_id       = $rest?->manufacturer_id;
-        $this->rest_model                 = $rest?->model ?? '';
+        $this->rest_manufacturer_id = $rest?->manufacturer_id;
+        $this->rest_model = $rest?->model ?? '';
         $this->stabilizer_manufacturer_id = $stabilizer?->manufacturer_id;
-        $this->stabilizer_model           = $stabilizer?->model ?? '';
-        $this->plunger_manufacturer_id    = $plunger?->manufacturer_id;
-        $this->plunger_model              = $plunger?->model ?? '';
-        $this->release_manufacturer_id    = $release?->manufacturer_id;
-        $this->release_model              = $release?->model ?? '';
+        $this->stabilizer_model = $stabilizer?->model ?? '';
+        $this->plunger_manufacturer_id = $plunger?->manufacturer_id;
+        $this->plunger_model = $plunger?->model ?? '';
+        $this->release_manufacturer_id = $release?->manufacturer_id;
+        $this->release_model = $release?->model ?? '';
 
         $this->showSheet = true;
     }
@@ -286,38 +325,38 @@ public function getLoadoutsProperty()
     public function save(): void
     {
         $this->validate([
-            'name' => ['required','string','max:80'],
+            'name' => ['required', 'string', 'max:80'],
             'is_primary' => ['boolean'],
-            'bow_type' => ['nullable','in:recurve,compound,longbow'],
-            'notes' => ['nullable','string','max:1000'],
+            'bow_type' => ['nullable', 'in:recurve,compound,longbow'],
+            'notes' => ['nullable', 'string', 'max:1000'],
 
-            'bow_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'bow_model' => ['nullable','string','max:120'],
-            'bow_draw_weight' => ['nullable','integer','min:10','max:80'],
-            'bow_notes' => ['nullable','string','max:400'],
+            'bow_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'bow_model' => ['nullable', 'string', 'max:120'],
+            'bow_draw_weight' => ['nullable', 'integer', 'min:10', 'max:80'],
+            'bow_notes' => ['nullable', 'string', 'max:400'],
 
-            'arrow_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'arrow_model' => ['nullable','string','max:120'],
-            'arrow_spine' => ['nullable','string','max:40'],
-            'arrow_length' => ['nullable','numeric','min:10','max:35'],
+            'arrow_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'arrow_model' => ['nullable', 'string', 'max:120'],
+            'arrow_spine' => ['nullable', 'string', 'max:40'],
+            'arrow_length' => ['nullable', 'numeric', 'min:10', 'max:35'],
 
-            'sight_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'sight_model' => ['nullable','string','max:120'],
+            'sight_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'sight_model' => ['nullable', 'string', 'max:120'],
 
-            'scope_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'scope_model' => ['nullable','string','max:120'],
+            'scope_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'scope_model' => ['nullable', 'string', 'max:120'],
 
-            'rest_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'rest_model' => ['nullable','string','max:120'],
+            'rest_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'rest_model' => ['nullable', 'string', 'max:120'],
 
-            'stabilizer_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'stabilizer_model' => ['nullable','string','max:120'],
+            'stabilizer_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'stabilizer_model' => ['nullable', 'string', 'max:120'],
 
-            'plunger_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'plunger_model' => ['nullable','string','max:120'],
+            'plunger_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'plunger_model' => ['nullable', 'string', 'max:120'],
 
-            'release_manufacturer_id' => ['nullable','exists:manufacturers,id'],
-            'release_model' => ['nullable','string','max:120'],
+            'release_manufacturer_id' => ['nullable', 'exists:manufacturers,id'],
+            'release_model' => ['nullable', 'string', 'max:120'],
         ]);
 
         // If this is becoming primary, unset others for this user
@@ -328,29 +367,29 @@ public function getLoadoutsProperty()
         if ($this->editingId) {
             $loadout = Auth::user()->loadouts()->findOrFail($this->editingId);
             $loadout->update([
-                'name'       => trim($this->name),
+                'name' => trim($this->name),
                 'is_primary' => (bool) $this->is_primary,
-                'bow_type'   => $this->bow_type ?: null,
-                'notes'      => $this->notes ?: null,
+                'bow_type' => $this->bow_type ?: null,
+                'notes' => $this->notes ?: null,
             ]);
         } else {
             $loadout = Auth::user()->loadouts()->create([
-                'name'       => trim($this->name),
+                'name' => trim($this->name),
                 'is_primary' => (bool) $this->is_primary,
-                'bow_type'   => $this->bow_type ?: null,
-                'notes'      => $this->notes ?: null,
+                'bow_type' => $this->bow_type ?: null,
+                'notes' => $this->notes ?: null,
             ]);
         }
 
         // Upsert Bow
         $this->upsertItem($loadout, 'bow', $this->bow_manufacturer_id, $this->bow_model, array_filter([
             'draw_weight' => $this->bow_draw_weight,
-            'notes'       => $this->bow_notes,
+            'notes' => $this->bow_notes,
         ]), position: 10);
 
         // Upsert Arrows
         $this->upsertItem($loadout, 'arrow', $this->arrow_manufacturer_id, $this->arrow_model, array_filter([
-            'spine'  => $this->arrow_spine,
+            'spine' => $this->arrow_spine,
             'length' => $this->arrow_length,
         ]), position: 20);
 
@@ -364,13 +403,13 @@ public function getLoadoutsProperty()
 
         $this->showSheet = false;
         $this->resetForm(keepLists: true);
-        $this->dispatch('toast', type:'success', message:'Loadout saved');
+        $this->dispatch('toast', type: 'success', message: 'Loadout saved');
     }
 
     protected function upsertItem($loadout, string $category, ?int $manufacturerId, ?string $model, array $specs, int $position): void
     {
         // if nothing was provided for this category & an item exists, leave it as-is
-        if (!$manufacturerId && !$model && empty($specs)) {
+        if (! $manufacturerId && ! $model && empty($specs)) {
             return;
         }
 
@@ -414,7 +453,7 @@ public function getLoadoutsProperty()
         $this->release_manufacturer_id = null;
         $this->release_model = '';
 
-        if (!$keepLists) {
+        if (! $keepLists) {
             $this->mount();
         }
     }
