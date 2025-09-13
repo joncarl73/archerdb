@@ -26,4 +26,14 @@ Route::middleware(['auth','profile.completed'])->group(function () {
 // Onboarding Routes
 Volt::route('/onboarding','pages.onboarding')->name('onboarding')->middleware(['auth']);
 
+// Admin Routes
+Route::middleware(['auth','admin'])
+    ->prefix('admin')
+    ->name('admin.')
+    ->group(function () {
+        Volt::route('users','admin.users')->name('users');
+        Volt::route('manufacturers','admin.manufacturers')->name('manufacturers');
+    });
+
+
 require __DIR__.'/auth.php';

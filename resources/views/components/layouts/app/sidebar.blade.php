@@ -13,10 +13,46 @@
 
             <flux:navlist variant="outline">
                 <flux:navlist.group :heading="__('Platform')" class="grid">
-                    <flux:navlist.item icon="home" :href="route('dashboard')" :current="request()->routeIs('dashboard')" wire:navigate>{{ __('Dashboard') }}</flux:navlist.item>
-                    <flux:navlist.item icon="folder" :href="route('gear.loadouts')" :current="request()->routeIs('gear.loadouts')" wire:navigate>{{ __('Loadouts') }}</flux:navlist.itemd>
+                    <flux:navlist.item
+                        icon="home"
+                        :href="route('dashboard')"
+                        :current="request()->routeIs('dashboard')"
+                        wire:navigate
+                    >{{ __('Dashboard') }}</flux:navlist.item>
+
+                    <flux:navlist.item
+                        icon="folder"
+                        :href="route('gear.loadouts')"
+                        :current="request()->routeIs('gear.loadouts')"
+                        wire:navigate
+                    >{{ __('Loadouts') }}</flux:navlist.item>
                 </flux:navlist.group>
+
+                @php($isAdmin = auth()->check() && (
+                    auth()->user()->role instanceof \App\Enums\UserRole
+                        ? auth()->user()->role->value === 'administrator'
+                        : auth()->user()->role === 'administrator'
+                ))
+
+                @if($isAdmin)
+                    <flux:navlist.group heading="Admin" class="grid mt-2">
+                        <flux:navlist.item
+                            icon="users"
+                            :href="route('admin.users')"
+                            :current="request()->routeIs('admin.users')"
+                            wire:navigate
+                        >Users</flux:navlist.item>
+
+                        <flux:navlist.item
+                            icon="wrench"
+                            :href="route('admin.manufacturers')"
+                            :current="request()->routeIs('admin.manufacturers')"
+                            wire:navigate
+                        >Manufacturers</flux:navlist.item>
+                    </flux:navlist.group>
+                @endif
             </flux:navlist>
+
 
             <flux:spacer />
 

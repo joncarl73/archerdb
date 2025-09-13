@@ -10,6 +10,7 @@ new class extends Component {
 
     // pagination
     protected string $pageName = 'loadoutsPage';
+    public int $perPage = 5;
 
     // sorting
     public string $sort = 'updated_at';
@@ -117,6 +118,7 @@ new class extends Component {
     public function prevPage(): void      { $this->previousPage($this->pageName); }
     public function nextPage(): void      { $this->nextPage($this->pageName); }
 
+
     // --- Inline actions ---
     public function makePrimary(int $id): void
     {
@@ -127,29 +129,26 @@ new class extends Component {
         $this->dispatch('toast', type:'success', message:'Primary updated');
     }
 
-    /** One-click delete with undo toast */
+
+        /** One-click delete with undo toast */
     public function delete(int $id): void
     {
         $user = Auth::user();
         $loadout = $user->loadouts()->findOrFail($id);
 
         $wasPrimary = (bool) $loadout->is_primary;
-        $loadout->delete(); // soft delete
+        $loadout->delete();
 
-        // promote newest remaining if we deleted primary
-        $promotedId = null;
         if ($wasPrimary) {
             $next = $user->loadouts()->latest('updated_at')->first();
             if ($next) {
                 $next->update(['is_primary' => true]);
-                $promotedId = $next->id;
             }
         }
 
         $this->lastDeleted = [
             'id'          => $loadout->id,
             'was_primary' => $wasPrimary,
-            'promoted_id' => $promotedId,
         ];
 
         $this->dispatch('toast',
@@ -163,6 +162,7 @@ new class extends Component {
             ],
         );
     }
+
 
     #[On('undo-loadout')]
     public function undoDelete(int $id): void
@@ -184,14 +184,32 @@ new class extends Component {
         $this->dispatch('toast', type:'success', message:'Undo complete', duration:2500);
     }
 
-    public function getLoadoutsProperty()
-    {
-        return Auth::user()
-            ->loadouts()
-            ->withCount('items')
-            ->orderBy($this->sort, $this->direction)
-            ->paginate(5, pageName: $this->pageName);
+public function getLoadoutsProperty()
+{
+    // Base query (no pagination yet)
+    $base = Auth::user()
+        ->loadouts()
+        ->orderBy($this->sort, $this->direction);
+
+    // Compute last valid page
+    $total    = (clone $base)->count();
+    $lastPage = max(1, (int) ceil($total / $this->perPage));
+
+    // ✅ Use Livewire’s internal paginator state (not the URL)
+    $requested = (int) ($this->paginators[$this->pageName] ?? 1);
+    $page = min(max(1, $requested), $lastPage);
+
+    // If out of range (e.g., after deleting the only item on page 2), fix state + URL
+    if ($requested !== $page) {
+        $this->setPage($page, $this->pageName);
     }
+
+    // Paginate on the clamped page
+    return $base
+        ->withCount('items')
+        ->paginate($this->perPage, ['*'], $this->pageName, $page);
+}
+
 
     /** Paging window for page buttons */
     public function getPageWindowProperty(): array
@@ -498,8 +516,8 @@ new class extends Component {
                 <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
                     <!-- Mobile Prev/Next -->
                     <div class="flex flex-1 justify-between sm:hidden">
-                        <button wire:click="prevPage" @disabled($p->onFirstPage()) class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg白/10">Previous</button>
-                        <button wire:click="nextPage" @disabled(!$p->hasMorePages()) class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg白/10">Next</button>
+                        <button wire:click="prevPage" @disabled($p->onFirstPage()) class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Previous</button>
+                        <button wire:click="nextPage" @disabled(!$p->hasMorePages()) class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Next</button>
                     </div>
 
                     <!-- Desktop pager -->
