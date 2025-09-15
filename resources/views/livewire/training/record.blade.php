@@ -9,7 +9,8 @@ new class extends Component
     // session config
     public int $arrowsPerEnd;
     public int $maxScore;
-    public string $scoringSystem = '10'; // used only for showing "X" label when max is 10
+    public string $scoringSystem = '10'; // used only to display "X" label when max is 10
+    public bool $autoAdvanceEnds = true; // when false, “Done” returns to the overview instead of jumping to the next end
 
     // keypad drawer UI state
     public bool $showKeypad   = false;
@@ -22,7 +23,8 @@ new class extends Component
 
         $this->arrowsPerEnd  = (int) ($this->session->arrows_per_end ?? 3);
         $this->maxScore      = (int) ($this->session->max_score ?? 10);
-        $this->scoringSystem = (string) ($this->session->scoring_system ?? '10');
+        // Derive a simple scoring "system" label just for showing X when max == 10
+        $this->scoringSystem = $this->maxScore === 10 ? '10' : (string) $this->maxScore;
 
         // Seed ends up to ends_planned with empty scores arrays
         $planned  = (int) ($this->session->ends_planned ?? 0);
@@ -33,7 +35,8 @@ new class extends Component
                 $this->session->ends()->create([
                     'end_number' => $i,
                     'scores'     => array_fill(0, $this->arrowsPerEnd, null),
-                    'end_score'  => 0,
+                    // untouched ends shouldn't look "completed"
+                    'end_score'  => 0, // keep 0 if your column isn't nullable
                     'x_count'    => 0,
                 ]);
             }
@@ -44,10 +47,10 @@ new class extends Component
     /** Keypad keys: X, max..0, M */
     public function getKeypadKeysProperty(): array
     {
-        $keys = range($this->maxScore, 0);
-        array_unshift($keys, 'X');
-        $keys[] = 'M';
-        return $keys;
+        $nums = range($this->maxScore, 0);
+        array_unshift($nums, 'X');
+        $nums[] = 'M';
+        return $nums;
     }
 
     /** Open keypad for a given cell */
@@ -63,6 +66,17 @@ new class extends Component
         $this->showKeypad = false;
     }
 
+    /** Translate keypad label -> numeric points honoring session x_value */
+    private function mapKeyToPoints(string $key): int
+    {
+        if ($key === 'M') return 0;
+        if ($key === 'X') return (int) ($this->session->x_value ?? 10);
+
+        // numeric key: allow up to the larger of (maxScore, x_value) so X=11 isn't clipped
+        $maxAllowed = max($this->maxScore, (int) ($this->session->x_value ?? 10));
+        return max(0, min($maxAllowed, (int) $key));
+    }
+
     /** Clear just the currently selected cell */
     public function clearCurrent(): void
     {
@@ -72,14 +86,14 @@ new class extends Component
         $scores = $end->scores ?? array_fill(0, $this->arrowsPerEnd, null);
         $scores[$this->selectedArrow] = null;
 
-        $end->scores = $scores;
-        $end->recalcTotals(maxScore: $this->maxScore);
-        $this->session->refreshTotals();
+        // Model event will normalize & recalc this end and refresh session totals
+        $end->fillScoresAndSave($scores);
 
+        // Refresh the in-memory session/ends for the UI
         $this->session->refresh()->load('ends');
     }
 
-    /** Handle keypad press and auto-advance */
+    /** Handle keypad press and auto-advance across arrows/ends */
     public function keypad(string $key): void
     {
         $end = $this->session->ends()->where('end_number', $this->selectedEnd)->first();
@@ -87,30 +101,44 @@ new class extends Component
 
         $scores = $end->scores ?? array_fill(0, $this->arrowsPerEnd, null);
 
-        $val = match ($key) {
-            'X' => $this->maxScore,
-            'M' => 0,
-            default => max(0, min($this->maxScore, (int) $key)),
-        };
-
+        // Convert to numeric points up front so model doesn't need to guess about 'X'/'M'
+        $val = $this->mapKeyToPoints($key);
         $scores[$this->selectedArrow] = $val;
 
-        $end->scores = $scores;
-        $end->recalcTotals(maxScore: $this->maxScore);
-        $this->session->refreshTotals();
+        // Normalize & save (model event will update end_score/x_count and session totals)
+        $end->fillScoresAndSave($scores);
 
-        // Auto-advance to next arrow / end
+        // Auto-advance to next arrow; if at the last arrow, decide whether to jump to next end
         if ($this->selectedArrow < $this->arrowsPerEnd - 1) {
             $this->selectedArrow++;
         } else {
             $planned = (int) ($this->session->ends_planned ?: $this->session->ends()->count());
-            if ($this->selectedEnd < $planned) {
+            if ($this->autoAdvanceEnds && $this->selectedEnd < $planned) {
                 $this->selectedEnd++;
                 $this->selectedArrow = 0;
             }
         }
 
         $this->session->refresh()->load('ends');
+    }
+
+    /** User tapped Done in the keypad */
+    public function done(): void
+    {
+        if ($this->autoAdvanceEnds) {
+            $planned = (int) ($this->session->ends_planned ?: $this->session->ends()->count());
+            $next = $this->selectedEnd + 1;
+
+            if ($next <= $planned) {
+                // Keep keypad open and jump to the next end's first arrow
+                $this->selectedEnd   = $next;
+                $this->selectedArrow = 0;
+                return;
+            }
+        }
+
+        // Auto-advance disabled (or no more ends): close and return to overview
+        $this->closeKeypad();
     }
 };
 ?>
@@ -125,7 +153,11 @@ new class extends Component
                 </h1>
                 <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">
                     {{ $session->title ?? 'Session' }} — {{ $session->distance_m ? $session->distance_m . 'm' : '—' }} •
-                    {{ $session->arrows_per_end }} arrows/end • up to {{ $session->max_score }} points/arrow
+                    {{ $session->arrows_per_end }} arrows/end •
+                    up to {{ $session->max_score }} points/arrow
+                    @if(($session->x_value ?? 10) > $session->max_score)
+                        (X={{ $session->x_value }})
+                    @endif
                 </p>
             </div>
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
@@ -160,19 +192,18 @@ new class extends Component
 
                             <td class="px-3 py-3">
                                 <div class="grid gap-2"
-                                     style="grid-template-columns: repeat({{ $this->arrowsPerEnd }}, minmax(0,1fr));">
-                                    @for ($i = 0; $i < $this->arrowsPerEnd; $i++)
+                                     style="grid-template-columns: repeat({{ $arrowsPerEnd }}, minmax(0,1fr));">
+                                    @for ($i = 0; $i < $arrowsPerEnd; $i++)
                                         @php($val = $end->scores[$i] ?? null)
                                         <button
                                             wire:click="startEntry({{ $end->end_number }}, {{ $i }})"
                                             class="h-10 rounded-lg inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                   dark:inset-ring-gray-700 dark:hover:bg-white/5
-                                                   @if($this->selectedEnd === $end->end_number && $this->selectedArrow === $i) ring-2 ring-indigo-500 @endif">
+                                                   dark:inset-ring-gray-700 dark:hover:bg-white/5 @if($selectedEnd === $end->end_number && $selectedArrow === $i) ring-2 ring-indigo-500 @endif">
                                             @if ($val === null)
                                                 <span class="opacity-40">·</span>
-                                            @elseif ($val === 0)
+                                            @elseif ((int)$val === 0)
                                                 M
-                                            @elseif ($val === $this->maxScore && $this->scoringSystem === '10')
+                                            @elseif ($scoringSystem === '10' && (int)$val === (int)($session->x_value ?? 10))
                                                 X
                                             @else
                                                 {{ $val }}
@@ -183,10 +214,10 @@ new class extends Component
                             </td>
 
                             <td class="px-3 py-3 text-sm tabular-nums">
-                                {{ $end->end_score }}
+                                {{ $end->end_score ?? 0 }}
                             </td>
                             <td class="px-3 py-3 text-sm tabular-nums">
-                                {{ $end->x_count }}
+                                {{ $end->x_count ?? 0 }}
                             </td>
                         </tr>
                     @endforeach
@@ -194,10 +225,27 @@ new class extends Component
 
                     {{-- Footer totals --}}
                     <tfoot class="bg-gray-50/60 dark:bg-white/5">
+                        @php($completedEnds = 0)
+                        @foreach ($session->ends as $e)
+                            @php($hasAny = false)
+                            @if (is_array($e->scores))
+                                @foreach ($e->scores as $sv)
+                                    @if (!is_null($sv))
+                                        @php($hasAny = true)
+                                        @break
+                                    @endif
+                                @endforeach
+                            @endif
+                            @if ($hasAny)
+                                @php($completedEnds++)
+                            @endif
+                        @endforeach
+                        @php($plannedEnds = $session->ends_planned ?? $session->ends->count())
+
                         <tr>
                             <th class="py-3.5 pl-4 pr-3 text-sm font-semibold text-gray-900 dark:text-white">Totals</th>
                             <td class="px-3 py-3 text-sm text-gray-600 dark:text-gray-300">
-                                Ends completed: {{ $session->ends_completed }} / {{ $session->ends_planned ?? $session->ends->count() }}
+                                Ends completed: {{ $completedEnds }} / {{ $plannedEnds }}
                             </td>
                             <td class="px-3 py-3 text-sm font-semibold tabular-nums">
                                 {{ $session->total_score }}
@@ -231,10 +279,16 @@ new class extends Component
             >
                 <div class="flex items-center justify-between">
                     <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-                        End #{{ $this->selectedEnd }}, Arrow {{ $this->selectedArrow + 1 }}
+                        End #{{ $selectedEnd }}, Arrow {{ $selectedArrow + 1 }}
                     </h2>
-                    <button class="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"
-                            wire:click="closeKeypad">✕</button>
+                    <div class="flex items-center gap-3">
+                        <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                            <span>Auto-advance ends</span>
+                            <flux:switch wire:model.live="autoAdvanceEnds" />
+                        </label>
+                        <button class="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"
+                                wire:click="closeKeypad">✕</button>
+                    </div>
                 </div>
 
                 <div class="mt-6 space-y-6">
@@ -253,25 +307,24 @@ new class extends Component
 
                         <div class="mt-4 flex items-center gap-3">
                             <flux:button variant="ghost" wire:click="clearCurrent">Clear</flux:button>
-                            <flux:button variant="primary" wire:click="closeKeypad">Done</flux:button>
+                            <flux:button variant="primary" wire:click="done">Done</flux:button>
                         </div>
                     </div>
 
                     {{-- Current end preview --}}
                     <div class="rounded-xl border border-gray-200 p-4 dark:border-zinc-700">
-                        @php($e = $session->ends->firstWhere('end_number', $this->selectedEnd))
+                        @php($e = $session->ends->firstWhere('end_number', $selectedEnd))
                         <div class="text-sm text-gray-700 dark:text-gray-300">
                             <div class="mb-2 font-medium">Current end</div>
                             <div class="flex gap-2">
-                                @for ($i = 0; $i < $this->arrowsPerEnd; $i++)
+                                @for ($i = 0; $i < $arrowsPerEnd; $i++)
                                     @php($v = $e?->scores[$i] ?? null)
-                                    <span class="inline-flex h-9 w-9 items-center justify-center rounded-md inset-ring inset-ring-gray-200 dark:inset-ring-white/10
-                                                 @if($this->selectedArrow === $i) ring-2 ring-indigo-500 @endif">
+                                    <span class="inline-flex h-9 w-9 items-center justify-center rounded-md inset-ring inset-ring-gray-200 dark:inset-ring-white/10 @if($selectedArrow === $i) ring-2 ring-indigo-500 @endif">
                                         @if ($v === null)
                                             <span class="opacity-40">·</span>
-                                        @elseif ($v === 0)
+                                        @elseif ((int)$v === 0)
                                             M
-                                        @elseif ($v === $this->maxScore && $this->scoringSystem === '10')
+                                        @elseif ($scoringSystem === '10' && (int)$v === (int)($session->x_value ?? 10))
                                             X
                                         @else
                                             {{ $v }}

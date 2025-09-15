@@ -492,7 +492,7 @@ new class extends Component
                             </th>
                             <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Items</th>
                             <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Updated</th>
-                            <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Primary</th>
+                            <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Primary</th>
                             <th scope="col" class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
@@ -508,7 +508,7 @@ new class extends Component
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     {{ $ld->updated_at?->format('Y-m-d') }}
                                 </td>
-                                <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     @if($ld->is_primary)
                                         <span class="inline-flex items-center rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-700/10 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-400/30">
                                             Primary

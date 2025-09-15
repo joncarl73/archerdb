@@ -25,6 +25,7 @@ Route::middleware(['auth','profile.completed'])->group(function () {
     // Personal Training Routes
     Volt::route('/training','training.index')->name('training.index');
     Volt::route('/training/{session}/record','training.record')->name('training.record')->whereNumber('session');
+    Volt::route('/training/{session}/stats','training.stats')->name('training.stats');
 });
 
 // Onboarding Routes

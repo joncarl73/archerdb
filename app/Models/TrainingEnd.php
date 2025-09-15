@@ -42,9 +42,11 @@ class TrainingEnd extends Model
         static::saving(function (self $end) {
             $end->loadMissing('trainingSession');
 
-            $session  = $end->trainingSession;
-            $len      = max(1, (int) ($session->arrows_per_end ?? 3));
-            $maxScore = max(1, (int) ($session->max_score ?? 10));
+            $session    = $end->trainingSession;
+            $len        = max(1, (int) ($session->arrows_per_end ?? 3));
+            $maxScore   = max(1, (int) ($session->max_score ?? 10));
+            $xValue     = (int) ($session->x_value ?? 10);
+            $maxAllowed = max($maxScore, $xValue); // allow X=11
 
             $scores = is_array($end->scores) ? array_values($end->scores) : [];
 
@@ -55,7 +57,7 @@ class TrainingEnd extends Model
             }
 
             // Recalculate end_score and x_count based on normalized input
-            [$scores, $endScore, $xCount] = self::recalculate($scores, $maxScore);
+            [$scores, $endScore, $xCount] = self::recalculate($scores, $maxAllowed, $xValue);
 
             $end->scores    = $scores;
             $end->end_score = $endScore;
@@ -80,8 +82,11 @@ class TrainingEnd extends Model
     {
         $this->loadMissing('trainingSession');
 
-        $len      = max(1, (int) ($this->trainingSession->arrows_per_end ?? 3));
-        $max      = $maxScore ?? max(1, (int) ($this->trainingSession->max_score ?? 10));
+        $len        = max(1, (int) ($this->trainingSession->arrows_per_end ?? 3));
+        $max        = $maxScore ?? max(1, (int) ($this->trainingSession->max_score ?? 10));
+        $xValue     = (int) ($this->trainingSession->x_value ?? 10);
+        $maxAllowed = max($max, $xValue);
+
         $scoresIn = $rawScores ?? (is_array($this->scores) ? array_values($this->scores) : []);
 
         // Trim/pad
@@ -90,7 +95,7 @@ class TrainingEnd extends Model
             $scoresIn = array_pad($scoresIn, $len, null);
         }
 
-        [$scores, $endScore, $xCount] = self::recalculate($scoresIn, $max);
+        [$scores, $endScore, $xCount] = self::recalculate($scoresIn, $maxAllowed, $xValue);
 
         $this->scores    = $scores;
         $this->end_score = $endScore;
@@ -101,7 +106,7 @@ class TrainingEnd extends Model
     /**
      * Accept keypad entries and save (triggers saving() to normalize & recalc).
      *
-     * @param array<int, mixed> $rawScores values like 10, 9, 'X', 'M', null…
+     * @param array<int, mixed> $rawScores values like 11, 10, 9, 'X', 'M', null…
      */
     public function fillScoresAndSave(array $rawScores): void
     {
@@ -112,10 +117,10 @@ class TrainingEnd extends Model
     /**
      * Normalize a single keypad value into:
      *  - null (no shot yet)
-     *  - 0..$maxScore (M -> 0, numeric clamped)
+     *  - 0..$maxAllowed (M -> 0, numeric clamped), with X recognized via $xValue
      * Also flags whether it was an "X".
      */
-    protected static function normalizeOne(mixed $raw, int $maxScore, bool &$isX): ?int
+    protected static function normalizeOne(mixed $raw, int $maxAllowed, int $xValue, bool &$isX): ?int
     {
         $isX = false;
 
@@ -123,6 +128,7 @@ class TrainingEnd extends Model
             return null;
         }
 
+        // String inputs: 'M', 'X', numeric-ish
         if (is_string($raw)) {
             $v = strtoupper(trim($raw));
             if ($v === 'M') {
@@ -130,18 +136,27 @@ class TrainingEnd extends Model
             }
             if ($v === 'X') {
                 $isX = true;
-                return $maxScore; // score as max, track X separately
+                return $xValue; // score exactly as X value (10 or 11)
             }
             if (is_numeric($v)) {
                 $num = (int) $v;
-                return max(0, min($maxScore, $num));
+                if ($num === $xValue) {
+                    $isX = true;
+                }
+                return max(0, min($maxAllowed, $num));
             }
             return null;
         }
 
+        // Numeric inputs: clamp to maxAllowed, treat == xValue as X
         if (is_int($raw) || is_float($raw)) {
             $num = (int) $raw;
-            return max(0, min($maxScore, $num));
+            if ($num === $xValue) {
+                $isX = true;
+            }
+            if ($num < 0) $num = 0;
+            if ($num > $maxAllowed) $num = $maxAllowed;
+            return $num;
         }
 
         return null;
@@ -151,7 +166,7 @@ class TrainingEnd extends Model
      * @param array<int, mixed> $scores
      * @return array{0: array<int, ?int>, 1: int, 2: int} [normalizedScores, endScore, xCount]
      */
-    protected static function recalculate(array $scores, int $maxScore): array
+    protected static function recalculate(array $scores, int $maxAllowed, int $xValue): array
     {
         $endScore = 0;
         $xCount   = 0;
@@ -159,7 +174,7 @@ class TrainingEnd extends Model
 
         foreach ($scores as $raw) {
             $isX = false;
-            $val = self::normalizeOne($raw, $maxScore, $isX);
+            $val = self::normalizeOne($raw, $maxAllowed, $xValue, $isX);
             $out[] = $val;
 
             if ($val !== null) {

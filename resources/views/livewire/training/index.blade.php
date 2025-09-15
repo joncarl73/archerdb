@@ -10,7 +10,7 @@ new class extends Component {
 
     // pagination
     protected string $pageName = 'sessionsPage';
-    public int $perPage = 10;
+    public int $perPage = 5;
 
     // sorting
     public string $sort = 'session_at'; // or 'updated_at'
@@ -36,6 +36,9 @@ new class extends Component {
     public ?string $notes = null;
     public ?int $rpe = null;
 
+    // X ring value (10 or 11)
+    public ?int $x_value = 10;
+
     // dropdown
     public array $loadouts = [];
 
@@ -59,15 +62,6 @@ new class extends Component {
     public function prevPage(): void      { $this->previousPage($this->pageName); }
     public function nextPage(): void      { $this->nextPage($this->pageName); }
 
-    public function rendered(): void
-    {
-        $p = $this->sessions;
-        if ($p->isEmpty() && $p->currentPage() > 1) {
-            $this->gotoPage($p->lastPage(), $this->pageName);
-            $this->dispatch('$refresh');
-        }
-    }
-
     // CRUD
     public function openCreate(): void
     {
@@ -79,19 +73,20 @@ new class extends Component {
     public function openEdit(int $id): void
     {
         $s = Auth::user()->trainingSessions()->findOrFail($id);
-        $this->editingId     = $s->id;
-        $this->loadout_id    = $s->loadout_id;
-        $this->title         = $s->title;
-        $this->session_at    = optional($s->session_at)->format('Y-m-d\TH:i');
-        $this->location      = $s->location;
-        $this->distance_m    = $s->distance_m;
-        $this->round_type    = $s->round_type;
-        $this->scoring_system= $s->scoring_system ?: '10';
-        $this->arrows_per_end= $s->arrows_per_end ?: 3;
-        $this->ends_planned  = $s->ends_planned;
-        $this->notes         = $s->notes;
-        $this->rpe           = $s->rpe;
-        $this->showSheet     = true;
+        $this->editingId      = $s->id;
+        $this->loadout_id     = $s->loadout_id;
+        $this->title          = $s->title;
+        $this->session_at     = optional($s->session_at)->format('Y-m-d\TH:i');
+        $this->location       = $s->location;
+        $this->distance_m     = $s->distance_m;
+        $this->round_type     = $s->round_type;
+        $this->scoring_system = $s->scoring_system ?: '10';
+        $this->arrows_per_end = $s->arrows_per_end ?: 3;
+        $this->ends_planned   = $s->ends_planned;
+        $this->notes          = $s->notes;
+        $this->rpe            = $s->rpe;
+        $this->x_value        = $s->x_value ?? 10;
+        $this->showSheet      = true;
     }
 
     public function save(): void
@@ -108,9 +103,9 @@ new class extends Component {
             'ends_planned'   => ['nullable','integer','min:1','max:60'],
             'notes'          => ['nullable','string','max:2000'],
             'rpe'            => ['nullable','integer','min:1','max:10'],
+            'x_value'        => ['required','integer','in:10,11'],
         ]);
 
-        // normalize datetime-local to Carbon
         if (!empty($data['session_at'])) {
             $data['session_at'] = \Illuminate\Support\Carbon::parse($data['session_at']);
         }
@@ -136,12 +131,7 @@ new class extends Component {
         $this->dispatch('toast',
             type: 'success',
             message: 'Session deleted',
-            duration: 6000,
-            action: [
-                'label'   => 'Undo',
-                'event'   => 'undo-session',
-                'payload' => ['id' => $s->id],
-            ],
+            duration: 4000,
         );
     }
 
@@ -159,17 +149,29 @@ new class extends Component {
 
     public function getSessionsProperty()
     {
-        return Auth::user()->trainingSessions()
+        $base = Auth::user()->trainingSessions()
             ->when($this->search, function($q){
                 $q->where(fn($qq) =>
                     $qq->where('title','like',"%{$this->search}%")
                        ->orWhere('location','like',"%{$this->search}%")
                 );
             })
+            ->with(['ends:id,training_session_id,scores,end_score,x_count'])
             ->withCount('ends')
             ->withSum('ends as total_score', 'end_score')
-            ->orderBy($this->sort, $this->direction)
-            ->paginate($this->perPage, ['*'], $this->pageName);
+            ->orderBy($this->sort, $this->direction);
+
+        $total    = (clone $base)->count();
+        $lastPage = max(1, (int) ceil($total / $this->perPage));
+
+        $requested = (int) ($this->paginators[$this->pageName] ?? 1);
+        $page      = min(max(1, $requested), $lastPage);
+
+        if ($requested !== $page) {
+            $this->setPage($page, $this->pageName);
+        }
+
+        return $base->paginate($this->perPage, ['*'], $this->pageName, $page);
     }
 
     public function getPageWindowProperty(): array
@@ -197,13 +199,14 @@ new class extends Component {
         $this->ends_planned = null;
         $this->notes = null;
         $this->rpe = null;
+        $this->x_value = 10;
 
         if (!$keepLists) $this->mount();
     }
 }; ?>
 
 <section class="w-full">
-    <div class="mx-auto max-w-7xl">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div class="sm:flex sm:items-center">
             <div class="sm:flex-auto">
                 <h1 class="text-base font-semibold text-gray-900 dark:text-white">Training sessions</h1>
@@ -235,101 +238,208 @@ new class extends Component {
                 </flux:select>
             </div>
         </div>
-    </div>
 
-    <div class="mt-6">
-        <div class="mx-auto max-w-7xl">
-            <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
-                <table class="w-full text-left">
-                    <thead class="bg-white dark:bg-gray-900">
+        {{-- Responsive table (Tailwind UI pattern) --}}
+        <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700 -mx-4 mt-6 sm:-mx-0">
+            <table class="min-w-full divide-y divide-gray-300 dark:divide-white/15">
+                <thead>
+                    <tr>
+                        <th scope="col" class="py-3.5 pr-3 pl-4 text-left text-sm font-semibold text-gray-900 sm:pl-0 dark:text-white">
+                            Title
+                        </th>
+                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">
+                            Date
+                        </th>
+                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                            Distance
+                        </th>
+                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">
+                            Ends
+                        </th>
+                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                            Score
+                        </th>
+                        <th scope="col" class="py-3.5 pr-4 pl-3 sm:pr-0">
+                            <span class="sr-only">Actions</span>
+                        </th>
+                    </tr>
+                </thead>
+
+                <tbody class="divide-y divide-gray-200 bg-white dark:divide-white/10 dark:bg-gray-900">
+                    @forelse($this->sessions as $s)
+                        @php
+                            // completed ends = any non-null value present in scores
+                            $completed = 0;
+                            foreach ($s->ends as $e) {
+                                $scores = is_array($e->scores) ? $e->scores : [];
+                                $hasAny = false;
+                                foreach ($scores as $v) { if (!is_null($v)) { $hasAny = true; break; } }
+                                if ($hasAny) $completed++;
+                            }
+
+                            // session is complete when all ends have no nulls
+                            $complete = collect($s->ends ?? [])->every(function ($e) {
+                                $scores = is_array($e->scores) ? $e->scores : [];
+                                if (! count($scores)) return false;
+                                foreach ($scores as $v) { if (is_null($v)) return false; }
+                                return true;
+                            });
+                        @endphp
+
                         <tr>
-                            <th class="py-3.5 pl-4 pr-3 text-sm font-semibold">Title</th>
-                            <th class="hidden px-3 py-3.5 text-sm font-semibold md:table-cell">Date</th>
-                            <th class="hidden px-3 py-3.5 text-sm font-semibold md:table-cell">Distance</th>
-                            <th class="px-3 py-3.5 text-sm font-semibold">Ends</th>
-                            <th class="px-3 py-3.5 text-sm font-semibold">Score</th>
-                            <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100 dark:divide-white/10">
-                        @forelse($this->sessions as $s)
-                            <tr>
-                                <td class="py-4 pl-4 pr-3 text-sm font-medium">
-                                    {{ $s->title ?? 'Session' }}
-                                    <div class="text-xs text-gray-500 dark:text-gray-400">
-                                        {{ ucfirst($s->round_type ?? 'practice') }}
-                                        @if($s->location) · {{ $s->location }} @endif
-                                    </div>
-                                </td>
-                                <td class="hidden px-3 py-4 text-sm md:table-cell">
-                                    {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
-                                </td>
-                                <td class="hidden px-3 py-4 text-sm md:table-cell">
-                                    {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
-                                </td>
-                                <td class="px-3 py-4 text-sm">
-                                    {{ $s->ends_count }} @if($s->ends_planned)/ {{ $s->ends_planned }}@endif
-                                </td>
-                                <td class="px-3 py-4 text-sm">
-                                    {{ (int)($s->total_score ?? 0) }} @if((int)($s->x_count ?? 0) > 0)<span class="text-xs opacity-60">({{ (int)$s->x_count }}X)</span>@endif
-                                </td>
-                                <td class="py-4 pl-3 pr-4 text-right text-sm space-x-3">
-                                    <a href="{{ route('training.record', $s->id) }}" wire:navigate class="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300">
-                                        Open<span class="sr-only">, {{ $s->title ?? 'Session' }}</span>
-                                    </a>
-                                    <button wire:click="openEdit({{ $s->id }})" class="text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100">
-                                        Edit
-                                    </button>
-                                    <button wire:click="delete({{ $s->id }})" class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
-                                        Delete
-                                    </button>
-                                </td>
-                            </tr>
-                        @empty
-                            <tr>
-                                <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
-                                    No sessions yet. Click “Add session” to log your first practice.
-                                </td>
-                            </tr>
-                        @endforelse
-                    </tbody>
-                </table>
+                            {{-- Title + mobile stacked details --}}
+                            <td class="w-full max-w-0 py-4 pr-3 pl-4 text-sm font-medium text-gray-900 sm:w-auto sm:max-w-none sm:pl-0 dark:text-white">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span>{{ $s->title ?? 'Session' }}</span>
+                                    {{-- X-value pill --}}
+                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium
+                                                 bg-gray-100 text-gray-800 dark:bg-white/10 dark:text-gray-200">
+                                        X={{ (int)($s->x_value ?? 10) }}
+                                    </span>
+                                </div>
 
-                @php($p = $this->sessions)
-                @php($w = $this->pageWindow)
-                <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
-                    <div class="flex flex-1 justify-between sm:hidden">
-                        <button wire:click="prevPage" @disabled($p->onFirstPage()) class="relative inline-flex items-center rounded-md border px-4 py-2 text-sm">Previous</button>
-                        <button wire:click="nextPage" @disabled(!$p->hasMorePages()) class="relative ml-3 inline-flex items-center rounded-md border px-4 py-2 text-sm">Next</button>
-                    </div>
-                    <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-                        <div>
-                            <p class="text-sm text-gray-700 dark:text-gray-300">
-                                Showing <span class="font-medium">{{ $p->firstItem() ?? 0 }}</span>
-                                to <span class="font-medium">{{ $p->lastItem() ?? 0 }}</span>
-                                of <span class="font-medium">{{ $p->total() }}</span> results
-                            </p>
-                        </div>
-                        <div>
-                            <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
-                                <button wire:click="prevPage" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled($p->onFirstPage())>
-                                    <span class="sr-only">Previous</span>
-                                    <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" /></svg>
-                                </button>
-                                @for ($i = $w['start']; $i <= $w['end']; $i++)
-                                    @if ($i === $w['current'])
-                                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white dark:bg-indigo-500">{{ $i }}</span>
+                                <dl class="font-normal lg:hidden">
+                                    <dt class="sr-only">Date</dt>
+                                    <dd class="mt-1 truncate text-gray-700 dark:text-gray-300">
+                                        {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
+                                    </dd>
+
+                                    <dt class="sr-only sm:hidden">Distance</dt>
+                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
+                                        {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
+                                    </dd>
+
+                                    <dt class="sr-only sm:hidden">Score</dt>
+                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
+                                        {{ (int)($s->total_score ?? 0) }}
+                                        @if((int)($s->x_count ?? 0) > 0)
+                                            <span class="opacity-60">({{ (int)$s->x_count }}X)</span>
+                                        @endif
+                                    </dd>
+
+                                    <dt class="sr-only sm:hidden">Meta</dt>
+                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
+                                        {{ ucfirst($s->round_type ?? 'practice') }} @if($s->location) • {{ $s->location }} @endif
+                                    </dd>
+                                </dl>
+                            </td>
+
+                            {{-- Desktop columns --}}
+                            <td class="hidden px-3 py-4 text-sm text-gray-500 lg:table-cell dark:text-gray-400">
+                                {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
+                            </td>
+                            <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
+                            </td>
+                            <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                                {{ $completed }}@if($s->ends_planned)/{{ $s->ends_planned }}@endif
+                            </td>
+                            <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                {{ (int)($s->total_score ?? 0) }}
+                                @if((int)($s->x_count ?? 0) > 0)
+                                    <span class="opacity-60">({{ (int)$s->x_count }}X)</span>
+                                @endif
+                            </td>
+
+                            {{-- Actions --}}
+                            <td class="py-4 pr-4 pl-3 text-right text-sm font-medium sm:pr-0">
+                                <div class="inline-flex items-center gap-1.5">
+                                    <a href="{{ route('training.record', $s) }}" wire:navigate>
+                                        <flux:button variant="ghost" size="xs" icon="eye" title="Open">
+                                            <span class="sr-only">Open</span>
+                                        </flux:button>
+                                    </a>
+
+                                    <flux:button
+                                        variant="ghost" size="xs" icon="pencil-square" title="Edit"
+                                        wire:click="openEdit({{ $s->id }})"
+                                    >
+                                        <span class="sr-only">Edit</span>
+                                    </flux:button>
+
+                                    @if ($complete)
+                                        <a href="{{ route('training.stats', $s->id) }}" wire:navigate>
+                                            <flux:button variant="ghost" size="xs" icon="chart-bar" title="View stats">
+                                                <span class="sr-only">View stats</span>
+                                            </flux:button>
+                                        </a>
                                     @else
-                                        <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
+                                        <flux:button variant="ghost" size="xs" icon="chart-bar" title="Stats available when session is complete" disabled>
+                                            <span class="sr-only">Stats (disabled)</span>
+                                        </flux:button>
                                     @endif
-                                @endfor
-                                <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
-                                    <span class="sr-only">Next</span>
-                                    <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" /></svg>
-                                </button>
-                            </nav>
-                        </div>
-                    </div>
+
+                                    <flux:button
+                                        variant="ghost" size="xs" icon="trash" title="Delete"
+                                        wire:click="delete({{ $s->id }})"
+                                    >
+                                        <span class="sr-only">Delete</span>
+                                    </flux:button>
+                                </div>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                No sessions yet. Click “Add session” to log your first practice.
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
+
+        {{-- Pagination footer (Blade-safe disabled attributes) --}}
+        @php($p = $this->sessions)
+        @php($w = $this->pageWindow)
+        <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
+            {{-- Mobile Prev/Next --}}
+            <div class="flex flex-1 justify-between sm:hidden">
+                <button wire:click="prevPage"
+                        class="relative inline-flex items-center rounded-md border px-4 py-2 text-sm"
+                        @if($p->onFirstPage()) disabled @endif>
+                    Previous
+                </button>
+                <button wire:click="nextPage"
+                        class="relative ml-3 inline-flex items-center rounded-md border px-4 py-2 text-sm"
+                        @if(!$p->hasMorePages()) disabled @endif>
+                    Next
+                </button>
+            </div>
+
+            {{-- Desktop pager --}}
+            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">
+                        Showing <span class="font-medium">{{ $p->firstItem() ?? 0 }}</span>
+                        to <span class="font-medium">{{ $p->lastItem() ?? 0 }}</span>
+                        of <span class="font-medium">{{ $p->total() }}</span> results
+                    </p>
+                </div>
+                <div>
+                    <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
+                        <button wire:click="prevPage"
+                                class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                @if($p->onFirstPage()) disabled @endif>
+                            <span class="sr-only">Previous</span>
+                            <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" /></svg>
+                        </button>
+
+                        @for ($i = $w['start']; $i <= $w['end']; $i++)
+                            @if ($i === $w['current'])
+                                <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white dark:bg-indigo-500">{{ $i }}</span>
+                            @else
+                                <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
+                            @endif
+                        @endfor
+
+                        <button wire:click="nextPage"
+                                class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                @if(!$p->hasMorePages()) disabled @endif>
+                            <span class="sr-only">Next</span>
+                            <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" /></svg>
+                        </button>
+                    </nav>
                 </div>
             </div>
         </div>
@@ -390,6 +500,25 @@ new class extends Component {
                                 <option value="none">No score</option>
                             </flux:select>
                         </div>
+
+                        {{-- X ring value selector --}}
+                        <div>
+                            <flux:label>X ring value</flux:label>
+                            <div class="mt-2 flex items-center gap-4">
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" class="rounded" wire:model="x_value" value="10">
+                                    <span>X = 10 (standard)</span>
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" class="rounded" wire:model="x_value" value="11">
+                                    <span>X = 11 (Lancaster)</span>
+                                </label>
+                            </div>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                This only changes how “X” is scored during entry.
+                            </p>
+                        </div>
+
                         <div>
                             <flux:label for="arrows_per_end">Arrows/end</flux:label>
                             <flux:select id="arrows_per_end" wire:model="arrows_per_end" class="w-full">

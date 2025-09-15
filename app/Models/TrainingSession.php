@@ -21,6 +21,7 @@ class TrainingSession extends Model
         'round_type',
         'arrows_per_end',
         'max_score',
+        'x_value',
         'ends_planned',
         'ends_completed',
         'total_score',
@@ -45,6 +46,7 @@ class TrainingSession extends Model
         'x_count'          => 'int',
         'duration_minutes' => 'int',
         'rpe'              => 'int',
+        'x_value'          => 'int',
     ];
 
     /* Relationships ------------------------------------------------------- */
@@ -108,6 +110,11 @@ class TrainingSession extends Model
         }
 
         $this->refreshTotals();
+    }
+
+    public function xCountAs(): int
+    {
+        return $this->x_value ?? 10;
     }
 
     /**
