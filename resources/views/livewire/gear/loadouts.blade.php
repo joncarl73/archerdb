@@ -517,27 +517,46 @@ new class extends Component
                                         <span class="text-xs opacity-60">—</span>
                                     @endif
                                 </td>
-                                <td class="py-4 pl-3 pr-4 text-right text-sm font-medium space-x-3">
-                                    {{-- Edit --}}
-                                    <button wire:click="openEdit({{ $ld->id }})"
-                                            class="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300">
-                                        Edit<span class="sr-only">, {{ $ld->name }}</span>
-                                    </button>
+                                <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
+                                    <div class="inline-flex items-center gap-1.5">
+                                        {{-- Edit --}}
+                                        <flux:button
+                                            variant="ghost"
+                                            size="xs"
+                                            icon="pencil-square"
+                                            title="Edit"
+                                            wire:click="openEdit({{ $ld->id }})"
+                                        >
+                                            <span class="sr-only">Edit {{ $ld->name }}</span>
+                                        </flux:button>
 
-                                    {{-- Set Primary (only if not already primary) --}}
-                                    @unless($ld->is_primary)
-                                        <button wire:click="makePrimary({{ $ld->id }})"
-                                                class="text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100">
-                                            Set primary
-                                        </button>
-                                    @endunless
+                                        {{-- Set Primary (only if not already primary) --}}
+                                        @unless($ld->is_primary)
+                                            <flux:button
+                                                variant="ghost"
+                                                size="xs"
+                                                icon="star"
+                                                title="Set primary"
+                                                wire:click="makePrimary({{ $ld->id }})"
+                                            >
+                                                <span class="sr-only">Set primary {{ $ld->name }}</span>
+                                            </flux:button>
+                                        @endunless
 
-                                    {{-- Delete (soft, with Undo toast) --}}
-                                    <button wire:click="delete({{ $ld->id }})"
-                                            class="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">
-                                        Delete
-                                    </button>
+                                        {{-- Delete (soft, with Undo toast) --}}
+                                        <flux:button
+                                            variant="ghost"
+                                            size="xs"
+                                            icon="trash"
+                                            title="Delete"
+                                            wire:click="delete({{ $ld->id }})"
+                                            class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                                        >
+                                            <span class="sr-only">Delete {{ $ld->name }}</span>
+                                        </flux:button>
+                                    </div>
                                 </td>
+
                             </tr>
                         @empty
                             <tr>

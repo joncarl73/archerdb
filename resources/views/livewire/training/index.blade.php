@@ -239,211 +239,204 @@ new class extends Component {
             </div>
         </div>
 
-        {{-- Responsive table (Tailwind UI pattern) --}}
-        <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700 -mx-4 mt-6 sm:-mx-0">
-            <table class="min-w-full divide-y divide-gray-300 dark:divide-white/15">
-                <thead>
-                    <tr>
-                        <th scope="col" class="py-3.5 pr-3 pl-4 text-left text-sm font-semibold text-gray-900 sm:pl-0 dark:text-white">
-                            Title
-                        </th>
-                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">
-                            Date
-                        </th>
-                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
-                            Distance
-                        </th>
-                        <th scope="col" class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">
-                            Ends
-                        </th>
-                        <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
-                            Score
-                        </th>
-                        <th scope="col" class="py-3.5 pr-4 pl-3 sm:pr-0">
-                            <span class="sr-only">Actions</span>
-                        </th>
-                    </tr>
-                </thead>
-
-                <tbody class="divide-y divide-gray-200 bg-white dark:divide-white/10 dark:bg-gray-900">
-                    @forelse($this->sessions as $s)
-                        @php
-                            // completed ends = any non-null value present in scores
-                            $completed = 0;
-                            foreach ($s->ends as $e) {
-                                $scores = is_array($e->scores) ? $e->scores : [];
-                                $hasAny = false;
-                                foreach ($scores as $v) { if (!is_null($v)) { $hasAny = true; break; } }
-                                if ($hasAny) $completed++;
-                            }
-
-                            // session is complete when all ends have no nulls
-                            $complete = collect($s->ends ?? [])->every(function ($e) {
-                                $scores = is_array($e->scores) ? $e->scores : [];
-                                if (! count($scores)) return false;
-                                foreach ($scores as $v) { if (is_null($v)) return false; }
-                                return true;
-                            });
-                        @endphp
-
+    {{-- Responsive table (Tailwind UI pattern) --}}
+    <div class="mt-8">
+        <div class="mx-auto max-w-7xl">
+            <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
+                <table class="w-full text-left">
+                    <thead class="bg-white dark:bg-gray-900">
                         <tr>
-                            {{-- Title + mobile stacked details --}}
-                            <td class="w-full max-w-0 py-4 pr-3 pl-4 text-sm font-medium text-gray-900 sm:w-auto sm:max-w-none sm:pl-0 dark:text-white">
-                                <div class="flex items-center gap-2 flex-wrap">
-                                    <span>{{ $s->title ?? 'Session' }}</span>
-                                    {{-- X-value pill --}}
-                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium
-                                                 bg-gray-100 text-gray-800 dark:bg-white/10 dark:text-gray-200">
-                                        X={{ (int)($s->x_value ?? 10) }}
-                                    </span>
-                                </div>
+                            <th scope="col" class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">
+                                Title
+                            </th>
 
-                                <dl class="font-normal lg:hidden">
-                                    <dt class="sr-only">Date</dt>
-                                    <dd class="mt-1 truncate text-gray-700 dark:text-gray-300">
-                                        {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
-                                    </dd>
+                            {{-- Hidden on mobile; visible >= sm --}}
+                            <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                                Date
+                            </th>
+                            <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                                Distance
+                            </th>
+                            <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                                Ends
+                            </th>
+                            <th scope="col" class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">
+                                Score
+                            </th>
 
-                                    <dt class="sr-only sm:hidden">Distance</dt>
-                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
-                                        {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
-                                    </dd>
+                            <th scope="col" class="py-3.5 pl-3 pr-4">
+                                <span class="sr-only">Actions</span>
+                            </th>
+                        </tr>
+                    </thead>
 
-                                    <dt class="sr-only sm:hidden">Score</dt>
-                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
-                                        {{ (int)($s->total_score ?? 0) }}
-                                        @if((int)($s->x_count ?? 0) > 0)
-                                            <span class="opacity-60">({{ (int)$s->x_count }}X)</span>
-                                        @endif
-                                    </dd>
+                    <tbody class="divide-y divide-gray-100 dark:divide-white/10">
+                        @forelse($this->sessions as $s)
+                            @php
+                                // completed ends = any non-null value present in scores
+                                $completed = 0;
+                                foreach (($s->ends ?? []) as $e) {
+                                    $scores = is_array($e->scores) ? $e->scores : [];
+                                    $hasAny = false;
+                                    foreach ($scores as $v) { if (!is_null($v)) { $hasAny = true; break; } }
+                                    if ($hasAny) $completed++;
+                                }
 
-                                    <dt class="sr-only sm:hidden">Meta</dt>
-                                    <dd class="mt-1 truncate text-gray-500 sm:hidden dark:text-gray-400">
-                                        {{ ucfirst($s->round_type ?? 'practice') }} @if($s->location) • {{ $s->location }} @endif
-                                    </dd>
-                                </dl>
-                            </td>
+                                // session is complete when all ends have no nulls
+                                $complete = collect($s->ends ?? [])->every(function ($e) {
+                                    $scores = is_array($e->scores) ? $e->scores : [];
+                                    if (! count($scores)) return false;
+                                    foreach ($scores as $v) { if (is_null($v)) return false; }
+                                    return true;
+                                });
+                            @endphp
 
-                            {{-- Desktop columns --}}
-                            <td class="hidden px-3 py-4 text-sm text-gray-500 lg:table-cell dark:text-gray-400">
-                                {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
-                            </td>
-                            <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
-                                {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
-                            </td>
-                            <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
-                                {{ $completed }}@if($s->ends_planned)/{{ $s->ends_planned }}@endif
-                            </td>
-                            <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
-                                {{ (int)($s->total_score ?? 0) }}
-                                @if((int)($s->x_count ?? 0) > 0)
-                                    <span class="opacity-60">({{ (int)$s->x_count }}X)</span>
-                                @endif
-                            </td>
+                            <tr>
+                                {{-- Title (only visible column on mobile) --}}
+                                <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <a href="{{ route('training.record', $s) }}" wire:navigate class="hover:underline">
+                                            {{ $s->title ?? 'Session' }}
+                                        </a>
+                                        {{-- X ring pill --}}
+                                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-800 dark:bg-white/10 dark:text-gray-200">
+                                            X={{ (int)($s->x_value ?? 10) }}
+                                        </span>
+                                    </div>
+                                </td>
 
-                            {{-- Actions --}}
-                            <td class="py-4 pr-4 pl-3 text-right text-sm font-medium sm:pr-0">
-                                <div class="inline-flex items-center gap-1.5">
-                                    <a href="{{ route('training.record', $s) }}" wire:navigate>
-                                        <flux:button variant="ghost" size="xs" icon="eye" title="Open">
-                                            <span class="sr-only">Open</span>
-                                        </flux:button>
-                                    </a>
+                                {{-- Desktop-only columns --}}
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                    {{ optional($s->session_at)->format('Y-m-d H:i') ?? '—' }}
+                                </td>
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                    {{ $s->distance_m ? $s->distance_m.' m' : '—' }}
+                                </td>
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                    {{ $completed }}@if($s->ends_planned)/{{ $s->ends_planned }}@endif
+                                </td>
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                    {{ (int)($s->total_score ?? 0) }}
+                                    @if((int)($s->x_count ?? 0) > 0)
+                                        <span class="opacity-60">({{ (int)$s->x_count }}X)</span>
+                                    @endif
+                                </td>
 
-                                    <flux:button
-                                        variant="ghost" size="xs" icon="pencil-square" title="Edit"
-                                        wire:click="openEdit({{ $s->id }})"
-                                    >
-                                        <span class="sr-only">Edit</span>
-                                    </flux:button>
-
-                                    @if ($complete)
-                                        <a href="{{ route('training.stats', $s->id) }}" wire:navigate>
-                                            <flux:button variant="ghost" size="xs" icon="chart-bar" title="View stats">
-                                                <span class="sr-only">View stats</span>
+                                {{-- Actions (visible on all breakpoints) --}}
+                                <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
+                                    <div class="inline-flex items-center gap-1.5">
+                                        <a href="{{ route('training.record', $s) }}" wire:navigate>
+                                            <flux:button variant="ghost" size="xs" icon="eye" title="Open">
+                                                <span class="sr-only">Open</span>
                                             </flux:button>
                                         </a>
-                                    @else
-                                        <flux:button variant="ghost" size="xs" icon="chart-bar" title="Stats available when session is complete" disabled>
-                                            <span class="sr-only">Stats (disabled)</span>
+
+                                        <flux:button
+                                            variant="ghost" size="xs" icon="pencil-square" title="Edit"
+                                            wire:click="openEdit({{ $s->id }})"
+                                        >
+                                            <span class="sr-only">Edit</span>
                                         </flux:button>
-                                    @endif
 
-                                    <flux:button
-                                        variant="ghost" size="xs" icon="trash" title="Delete"
-                                        wire:click="delete({{ $s->id }})"
-                                    >
-                                        <span class="sr-only">Delete</span>
-                                    </flux:button>
-                                </div>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
-                                No sessions yet. Click “Add session” to log your first practice.
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
-        </div>
+                                        @if ($complete)
+                                            <a href="{{ route('training.stats', $s->id) }}" wire:navigate>
+                                                <flux:button variant="ghost" size="xs" icon="chart-bar" title="View stats">
+                                                    <span class="sr-only">View stats</span>
+                                                </flux:button>
+                                            </a>
+                                        @else
+                                            <flux:button variant="ghost" size="xs" icon="chart-bar" title="Stats available when session is complete" disabled>
+                                                <span class="sr-only">Stats (disabled)</span>
+                                            </flux:button>
+                                        @endif
 
-        {{-- Pagination footer (Blade-safe disabled attributes) --}}
-        @php($p = $this->sessions)
-        @php($w = $this->pageWindow)
-        <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
-            {{-- Mobile Prev/Next --}}
-            <div class="flex flex-1 justify-between sm:hidden">
-                <button wire:click="prevPage"
-                        class="relative inline-flex items-center rounded-md border px-4 py-2 text-sm"
-                        @if($p->onFirstPage()) disabled @endif>
-                    Previous
-                </button>
-                <button wire:click="nextPage"
-                        class="relative ml-3 inline-flex items-center rounded-md border px-4 py-2 text-sm"
-                        @if(!$p->hasMorePages()) disabled @endif>
-                    Next
-                </button>
-            </div>
+                                        <flux:button
+                                            variant="ghost" size="xs" icon="trash" title="Delete"
+                                            wire:click="delete({{ $s->id }})"
+                                        >
+                                            <span class="sr-only">Delete</span>
+                                        </flux:button>
+                                    </div>
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                    No sessions yet. Click “Add session” to log your first practice.
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
 
-            {{-- Desktop pager --}}
-            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-                <div>
-                    <p class="text-sm text-gray-700 dark:text-gray-300">
-                        Showing <span class="font-medium">{{ $p->firstItem() ?? 0 }}</span>
-                        to <span class="font-medium">{{ $p->lastItem() ?? 0 }}</span>
-                        of <span class="font-medium">{{ $p->total() }}</span> results
-                    </p>
-                </div>
-                <div>
-                    <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
+                {{-- Pagination footer (identical pattern to Loadouts) --}}
+                @php($p = $this->sessions)
+                @php($w = $this->pageWindow)
+                <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
+                    <!-- Mobile Prev/Next -->
+                    <div class="flex flex-1 justify-between sm:hidden">
                         <button wire:click="prevPage"
-                                class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5"
-                                @if($p->onFirstPage()) disabled @endif>
-                            <span class="sr-only">Previous</span>
-                            <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" /></svg>
+                                @disabled($p->onFirstPage())
+                                class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">
+                            Previous
                         </button>
-
-                        @for ($i = $w['start']; $i <= $w['end']; $i++)
-                            @if ($i === $w['current'])
-                                <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white dark:bg-indigo-500">{{ $i }}</span>
-                            @else
-                                <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
-                            @endif
-                        @endfor
-
                         <button wire:click="nextPage"
-                                class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 dark:inset-ring-gray-700 dark:hover:bg-white/5"
-                                @if(!$p->hasMorePages()) disabled @endif>
-                            <span class="sr-only">Next</span>
-                            <svg viewBox="0 0 20 20" fill="currentColor" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" /></svg>
+                                @disabled(!$p->hasMorePages())
+                                class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">
+                            Next
                         </button>
-                    </nav>
+                    </div>
+
+                    <!-- Desktop pager -->
+                    <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                        <div>
+                            <p class="text-sm text-gray-700 dark:text-gray-300">
+                                Showing <span class="font-medium">{{ $p->firstItem() ?? 0 }}</span>
+                                to <span class="font-medium">{{ $p->lastItem() ?? 0 }}</span>
+                                of <span class="font-medium">{{ $p->total() }}</span> results
+                            </p>
+                        </div>
+                        <div>
+                            <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
+                                <button wire:click="prevPage"
+                                        class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                        @disabled($p->onFirstPage())>
+                                    <span class="sr-only">Previous</span>
+                                    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5">
+                                        <path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd" fill-rule="evenodd" />
+                                    </svg>
+                                </button>
+
+                                @for ($i = $w['start']; $i <= $w['end']; $i++)
+                                    @if ($i === $w['current'])
+                                        <span aria-current="page"
+                                            class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:bg-indigo-500 dark:focus-visible:outline-indigo-500">
+                                            {{ $i }}
+                                        </span>
+                                    @else
+                                        <button wire:click="goto({{ $i }})"
+                                                class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">
+                                            {{ $i }}
+                                        </button>
+                                    @endif
+                                @endfor
+
+                                <button wire:click="nextPage"
+                                        class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                        @disabled(!$p->hasMorePages())>
+                                    <span class="sr-only">Next</span>
+                                    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5">
+                                        <path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" fill-rule="evenodd" />
+                                    </svg>
+                                </button>
+                            </nav>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </div> {{-- /bordered wrapper --}}
         </div>
     </div>
+
 
     {{-- Sheet --}}
     @if($showSheet)

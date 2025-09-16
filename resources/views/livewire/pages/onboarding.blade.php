@@ -1,8 +1,12 @@
 {{-- resources/views/livewire/pages/onboarding.blade.php --}}
 <?php
-use Illuminate\Support\Facades\Auth;
 use App\Models\ArcherProfile;
-use function Livewire\Volt\{state, rules, layout, title};
+use Illuminate\Support\Facades\Auth;
+
+use function Livewire\Volt\layout;
+use function Livewire\Volt\rules;
+use function Livewire\Volt\state;
+use function Livewire\Volt\title;
 
 layout('components.layouts.app');
 title('Onboarding');
@@ -19,14 +23,14 @@ state([
 ]);
 
 rules(fn () => [
-    'gender'            => ['required','in:male,female,nonbinary,other,prefer_not_to_say'],
-    'birth_date'        => ['required','date','before:today'],
-    'handedness'        => ['required','in:right,left'],
-    'para_archer'       => ['boolean'],
-    'uses_wheelchair'   => ['boolean'],
-    'club_affiliation'  => ['nullable','string','max:120'],
-    'us_archery_number' => ['nullable','string','max:30'],
-    'country'           => ['required','size:2'],
+    'gender' => ['required', 'in:male,female,nonbinary,other,prefer_not_to_say'],
+    'birth_date' => ['required', 'date', 'before:today'],
+    'handedness' => ['required', 'in:right,left'],
+    'para_archer' => ['boolean'],
+    'uses_wheelchair' => ['boolean'],
+    'club_affiliation' => ['nullable', 'string', 'max:120'],
+    'us_archery_number' => ['nullable', 'string', 'max:30'],
+    'country' => ['required', 'size:2'],
 ]);
 
 $save = function () {
@@ -35,15 +39,15 @@ $save = function () {
     ArcherProfile::updateOrCreate(
         ['user_id' => Auth::id()],
         [
-            'gender'            => $this->gender ?: null,
-            'birth_date'        => $this->birth_date ?: null,
-            'handedness'        => $this->handedness ?: null,
-            'para_archer'       => (bool) $this->para_archer,
-            'uses_wheelchair'   => (bool) $this->uses_wheelchair,
-            'club_affiliation'  => $this->club_affiliation ?: null,
+            'gender' => $this->gender ?: null,
+            'birth_date' => $this->birth_date ?: null,
+            'handedness' => $this->handedness ?: null,
+            'para_archer' => (bool) $this->para_archer,
+            'uses_wheelchair' => (bool) $this->uses_wheelchair,
+            'club_affiliation' => $this->club_affiliation ?: null,
             'us_archery_number' => $this->us_archery_number ?: null,
-            'country'           => $this->country ?: null,
-            'completed_at'      => now(),
+            'country' => $this->country ?: null,
+            'completed_at' => now(),
         ]
     );
 

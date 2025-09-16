@@ -11,6 +11,7 @@ return new class extends Migration {
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->string('name');
             $table->boolean('is_primary')->default(false);
+            $table->string('bow_type', 20)->nullable()->default(null);
             $table->text('notes')->nullable();
             $table->timestamps();
             $table->unique(['user_id', 'name']);
