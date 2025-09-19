@@ -59,13 +59,14 @@
 
                 </flux:navlist.group>
 
-                @php($isAdmin = auth()->check() && (
-                    auth()->user()->role instanceof \App\Enums\UserRole
-                        ? auth()->user()->role->value === 'administrator'
-                        : auth()->user()->role === 'administrator'
-                ))
+                @corporate
+                    <flux:navlist.group heading="Corporate" class="grid mt-2">
+                    </flux:navlist.group>
+                @endcorporate
 
-                @if($isAdmin)
+
+
+                @admin
                     <flux:navlist.group heading="Admin" class="grid mt-2">
                         <flux:navlist.item
                             icon="users"
@@ -81,20 +82,14 @@
                             wire:navigate
                         >Manufacturers</flux:navlist.item>
                     </flux:navlist.group>
-                @endif
+                @endadmin
             </flux:navlist>
 
 
             <flux:spacer />
 
             <flux:navlist variant="outline">
-                <flux:navlist.item icon="folder-git-2" href="https://github.com/laravel/livewire-starter-kit" target="_blank">
-                {{ __('Repository') }}
-                </flux:navlist.item>
-
-                <flux:navlist.item icon="book-open-text" href="https://laravel.com/docs/starter-kits#livewire" target="_blank">
-                {{ __('Documentation') }}
-                </flux:navlist.item>
+                <flux:navlist.item><x-install-button /></flux:navlist.item>
             </flux:navlist>
 
             <!-- Desktop User Menu -->
@@ -244,5 +239,12 @@
 
 
         @fluxScripts
+        <script>
+            if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('/sw.js');
+                });
+            }
+        </script>
     </body>
 </html>
