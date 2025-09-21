@@ -239,13 +239,6 @@ new class extends Component
             </div>
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
                 <div class="flex items-center gap-2">
-                    {{-- Public link --}}
-                    <a href="{{ route('leagues.public', $league->public_uuid) }}"
-                    target="_blank"
-                    class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                            dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                        Public page
-                    </a>
 
                     @corporate
                     {{-- Download template --}}

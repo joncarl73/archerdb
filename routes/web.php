@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\PublicCheckinController;
 use App\Models\League;
 use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
@@ -103,8 +104,28 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         })->name('leagues.participants.export');
     });
 
-// Outside page for non members for leagues
-Route::get('/l/{uuid}', [\App\Http\Controllers\PublicLeagueController::class, 'show'])
-    ->name('leagues.public');
+// --- PUBLIC (no auth) ---
+Route::prefix('l/{uuid}')->group(function () {
+    // Public league page (you already have this)
+    // Route::get('/', [PublicLeagueController::class, 'show'])->name('leagues.public');
+
+    // Public check-in flow
+    Route::get('/checkin', [PublicCheckinController::class, 'participants'])
+        ->name('public.checkin.participants'); // pick participant
+
+    Route::post('/checkin', [PublicCheckinController::class, 'participantsSubmit'])
+        ->name('public.checkin.participants.submit');
+
+    Route::get('/checkin/{participant}', [PublicCheckinController::class, 'details'])
+        ->whereNumber('participant')
+        ->name('public.checkin.details'); // pick week + lane
+
+    Route::post('/checkin/{participant}', [PublicCheckinController::class, 'detailsSubmit'])
+        ->whereNumber('participant')
+        ->name('public.checkin.details.submit');
+
+    Route::get('/checkin/ok', [PublicCheckinController::class, 'ok'])
+        ->name('public.checkin.ok'); // confirmation
+});
 
 require __DIR__.'/auth.php';

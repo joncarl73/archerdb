@@ -81,4 +81,29 @@ class League extends Model
             ? $this->lane_breakdown->value
             : (string) $this->lane_breakdown;
     }
+
+    // app/Models/League.php
+
+    public function laneOptions(): array
+    {
+        // supports enum or string stored value
+        $breakdown = (string) ($this->lane_breakdown?->value ?? $this->lane_breakdown);
+
+        $suffixes = match ($breakdown) {
+            'single' => [''],
+            'ab' => ['A', 'B'],
+            'abcd' => ['A', 'B', 'C', 'D'],
+            default => [''],
+        };
+
+        $out = [];
+        for ($i = 1; $i <= (int) $this->lanes_count; $i++) {
+            foreach ($suffixes as $s) {
+                $code = $s === '' ? (string) $i : $i.$s;     // "1", "1A", "1B", ...
+                $out[$code] = 'Lane '.$code;                 // label
+            }
+        }
+
+        return $out; // assoc: ['1' => 'Lane 1', '1A' => 'Lane 1A', ...]
+    }
 }
