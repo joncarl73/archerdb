@@ -49,6 +49,11 @@ new class extends Component
 
     public string $lane_breakdown = 'single'; // single|ab|abcd
 
+    // NEW: Scoring Defaults
+    public int $ends_per_day = 10;
+
+    public int $arrows_per_end = 3;
+
     // --- lifecycle ---
     public function updatingSort()
     {
@@ -153,6 +158,8 @@ new class extends Component
         // NEW: lanes
         $this->lanes_count = (int) ($league->lanes_count ?? 10);
         $this->lane_breakdown = $league->lane_breakdown_value ?? 'single'; // ← use accessor
+        $this->ends_per_day = (int) ($league->ends_per_day ?? 10);
+        $this->arrows_per_end = (int) ($league->arrows_per_end ?? 3);
 
         $this->showSheet = true;
     }
@@ -171,6 +178,9 @@ new class extends Component
             // NEW:
             'lanes_count' => ['required', 'integer', 'between:1,100'],
             'lane_breakdown' => ['required', 'in:single,ab,abcd'],
+            // NEW: Scoring fields
+            'ends_per_day' => ['required', 'integer', 'between:1,60'],
+            'arrows_per_end' => ['required', 'integer', 'between:1,12'],
         ]);
 
         if ($this->editingId) {
@@ -188,6 +198,8 @@ new class extends Component
                 // NEW:
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
+                'ends_per_day' => $this->ends_per_day,
+                'arrows_per_end' => $this->arrows_per_end,
             ]);
 
             // refresh weeks on edit
@@ -247,6 +259,8 @@ new class extends Component
         // NEW:
         $this->lanes_count = 10;
         $this->lane_breakdown = 'single';
+        $this->ends_per_day = 10;
+        $this->arrows_per_end = 3;
     }
 };
 ?>
@@ -288,6 +302,7 @@ new class extends Component
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Weeks</th>
                             {{-- NEW: Lanes/Capacity --}}
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">Lanes</th>
+                            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Ends × Arrows</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Status</th>
                             <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
                         </tr>
@@ -325,6 +340,12 @@ new class extends Component
                                     @else single @endif
                                     <span class="ml-1 text-xs opacity-70">({{ $cap }} positions)</span>
                                 </td>
+
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
+                                    {{ $lg->ends_per_day }}×{{ $lg->arrows_per_end }}
+                                    <span class="text-xs opacity-70">({{ $lg->ends_per_day * $lg->arrows_per_end }} total)</span>
+                                </td>
+
 
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     @if($lg->is_published)
@@ -504,6 +525,26 @@ new class extends Component
                             </p>
                         </div>
                     </div>
+
+                    {{-- Scoring config (per league date) --}}
+                    <div class="grid gap-4 md:grid-cols-3">
+                        <div>
+                            <flux:label for="ends_per_day"># Ends (per date)</flux:label>
+                            <flux:input id="ends_per_day" type="number" min="1" max="60" wire:model="ends_per_day" />
+                            @error('ends_per_day') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                        </div>
+                        <div>
+                            <flux:label for="arrows_per_end">Arrows per end</flux:label>
+                            <flux:input id="arrows_per_end" type="number" min="1" max="12" wire:model="arrows_per_end" />
+                            @error('arrows_per_end') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+
+                            <p class="text-xs opacity-70 mt-1">
+                                Total arrows per date:
+                                {{ max(1,(int)$ends_per_day) * max(1,(int)$arrows_per_end) }}
+                            </p>
+                        </div>
+                    </div>
+
 
                     <div class="grid gap-4 md:grid-cols-2">
                         <div>

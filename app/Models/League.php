@@ -15,7 +15,7 @@ class League extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'public_uuid', 'owner_id', 'title', 'location', 'length_weeks', 'day_of_week', 'start_date', 'type', 'is_published', 'is_archived', 'price_cents', 'currency', 'stripe_account_id', 'stripe_product_id', 'stripe_price_id', 'lanes_count', 'lane_breakdown',
+        'public_uuid', 'owner_id', 'title', 'location', 'length_weeks', 'day_of_week', 'start_date', 'type', 'is_published', 'is_archived', 'price_cents', 'currency', 'stripe_account_id', 'stripe_product_id', 'stripe_price_id', 'lanes_count', 'lane_breakdown', 'ends_per_day', 'arrows_per_end',
     ];
 
     protected $casts = [
@@ -24,6 +24,8 @@ class League extends Model
         'lane_breakdown' => LaneBreakdown::class,
         'is_published' => 'bool',
         'is_archived' => 'bool',
+        'ends_per_day' => 'int',
+        'arrows_per_end' => 'int',
     ];
 
     protected static function booted(): void
