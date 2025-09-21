@@ -85,16 +85,16 @@ class PublicCheckinController extends Controller
         $league = $this->leagueOr404($uuid);
         $p = LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
 
-        // Validate week_number is one of the league's weeks, and lane is a compact code like "5" or "5A"
+        // Validate week_number is a valid league week and lane is "5" or "5A" style
         $request->validate([
             'week_number' => [
                 'required', 'integer', 'between:1,'.$league->length_weeks,
                 Rule::exists('league_weeks', 'week_number')->where('league_id', $league->id),
             ],
-            'lane' => ['required', 'string', 'max:10'], // e.g. "5" or "5A"
+            'lane' => ['required', 'string', 'max:10'],
         ]);
 
-        // Parse lane into lane_number + lane_slot
+        // Parse lane into number + slot
         $laneCode = trim($request->input('lane'));     // "5" or "5A"
         $laneNumber = null;
         $laneSlot = 'single';                          // default for single-lane
@@ -104,14 +104,14 @@ class PublicCheckinController extends Controller
             $laneSlot = 'single';
         } elseif (preg_match('/^(\d+)([A-D])$/i', $laneCode, $m)) {
             $laneNumber = (int) $m[1];
-            $laneSlot = strtoupper($m[2]);          // "A" | "B" | "C" | "D"
+            $laneSlot = strtoupper($m[2]);            // "A" | "B" | "C" | "D"
         } else {
             return back()->withErrors(['lane' => 'Invalid lane selection.'])->withInput();
         }
 
-        // Optional: sanity-check against league config
-        $max = (int) $league->lanes_count;
-        if ($laneNumber < 1 || $laneNumber > $max) {
+        // Sanity-check against league config
+        $maxLanes = (int) $league->lanes_count;
+        if ($laneNumber < 1 || $laneNumber > $maxLanes) {
             return back()->withErrors(['lane' => 'Lane number out of range.'])->withInput();
         }
         $allowedLetters = $league->lane_breakdown->letters(); // [] | ['A','B'] | ['A','B','C','D']
@@ -119,32 +119,66 @@ class PublicCheckinController extends Controller
             return back()->withErrors(['lane' => 'Lane slot not allowed for this league.'])->withInput();
         }
 
-        // Create the check-in using the actual schema
+        $weekNumber = (int) $request->input('week_number');
+        $laneLabel = $laneNumber.($laneSlot === 'single' ? '' : $laneSlot);
+
+        // ✅ Check if already checked in for this week
+        $existing = LeagueCheckin::query()
+            ->where('league_id', $league->id)
+            ->where('participant_id', $p->id)
+            ->where('week_number', $weekNumber)
+            ->first();
+
+        if ($existing) {
+            // Update lane if changed; refresh timestamp to reflect recent check-in action
+            $existing->update([
+                'lane_number' => $laneNumber,
+                'lane_slot' => $laneSlot,
+                'checked_in_at' => now(),
+            ]);
+
+            return redirect()
+                ->route('public.checkin.ok', ['uuid' => $uuid])
+                ->with([
+                    'ok_name' => $p->first_name.' '.$p->last_name,
+                    'ok_repeat' => true,
+                    'ok_week' => $weekNumber,
+                    'ok_lane' => $laneLabel,
+                ]);
+        }
+
+        // New check-in
         LeagueCheckin::create([
             'league_id' => $league->id,
             'participant_id' => $p->id,
-            // If your table also has convenience columns:
-            'participant_name' => $p->first_name.' '.$p->last_name ?? null,
-            'participant_email' => $p->email ?? null,
-
-            'week_number' => (int) $request->input('week_number'),
+            'participant_name' => trim($p->first_name.' '.$p->last_name),
+            'participant_email' => $p->email ?: null,
+            'week_number' => $weekNumber,
             'lane_number' => $laneNumber,
-            'lane_slot' => $laneSlot, // 'single' or 'A'/'B'/'C'/'D'
-
+            'lane_slot' => $laneSlot,
             'checked_in_at' => now(),
         ]);
 
         return redirect()
             ->route('public.checkin.ok', ['uuid' => $uuid])
-            ->with('ok_name', $p->first_name.' '.$p->last_name);
+            ->with([
+                'ok_name' => $p->first_name.' '.$p->last_name,
+                'ok_repeat' => false,
+                'ok_week' => $weekNumber,
+                'ok_lane' => $laneLabel,
+            ]);
     }
 
     public function ok(string $uuid)
     {
         $league = $this->leagueOr404($uuid);
-        $name = session('ok_name');
+        $name = session('ok_name');          // string|null
+        $repeat = (bool) session('ok_repeat'); // true if already checked in
+        $week = session('ok_week');          // int|null
+        $lane = session('ok_lane');          // string like "5" or "5A"
 
-        return response()->view('public.checkin.ok', compact('league', 'name'));
+        // If someone hits this page directly without a session, show a gentle fallback
+        return response()->view('public.checkin.ok', compact('league', 'name', 'repeat', 'week', 'lane'));
     }
 
     public function week(League $league, string $participant)

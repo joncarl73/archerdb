@@ -1,5 +1,6 @@
 <?php
 use App\Models\League;
+use App\Models\LeagueCheckin;
 use App\Models\LeagueParticipant;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
@@ -26,11 +27,18 @@ new class extends Component
 
     public $csv; // temporary uploaded file
 
+    public string $checkinUrl = '';    // public check-in URL for QR/link
+
     // --- lifecycle ---
     public function mount(League $league): void
     {
         Gate::authorize('view', $league);
+
+        // Weeks in order
         $this->league = $league->load(['weeks' => fn ($q) => $q->orderBy('week_number')]);
+
+        // Public check-in URL (the participants picker page)
+        $this->checkinUrl = route('public.checkin.participants', ['uuid' => $this->league->public_uuid]);
     }
 
     public function updatingSearch(): void
@@ -60,8 +68,7 @@ new class extends Component
             ->when($this->search, fn ($q) => $q->where(fn ($w) => $w->where('first_name', 'like', "%{$this->search}%")
                 ->orWhere('last_name', 'like', "%{$this->search}%")
                 ->orWhere('email', 'like', "%{$this->search}%")
-            )
-            )
+            ))
             ->orderBy('last_name')
             ->orderBy('first_name');
 
@@ -74,6 +81,16 @@ new class extends Component
         }
 
         return $base->paginate($this->perPage, ['*'], $this->pageName, $page);
+    }
+
+    public function getCheckinsByWeekProperty(): array
+    {
+        return LeagueCheckin::query()
+            ->where('league_id', $this->league->id)
+            ->selectRaw('week_number, COUNT(*) as c')
+            ->groupBy('week_number')
+            ->pluck('c', 'week_number')
+            ->toArray();
     }
 
     // pager window like Loadouts
@@ -139,7 +156,7 @@ new class extends Component
             if ($email !== '') {
                 $userId = optional(\App\Models\User::where('email', $email)->first())->id;
                 if ($this->league->type->value === 'closed' && ! $userId) {
-                    $skipped++; // not a member -> skip (could be queued for invites later)
+                    $skipped++; // not a member -> skip
 
                     continue;
                 }
@@ -149,7 +166,7 @@ new class extends Component
                 continue;
             }
 
-            // Dedup by email if provided, else by (first,last) tuple
+            // Dedup by email if provided, else (first,last) tuple without email
             $existing = null;
             if ($email !== '') {
                 $existing = LeagueParticipant::where('league_id', $this->league->id)
@@ -237,35 +254,65 @@ new class extends Component
                     {{ $league->length_weeks }} weeks
                 </p>
             </div>
+
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
                 <div class="flex items-center gap-2">
-
-                    @corporate
                     {{-- Download template --}}
                     <a href="{{ route('corporate.leagues.participants.template', $league) }}"
-                    class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                            dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                       class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
                         Download CSV template
                     </a>
 
-                    {{-- (Optional) export existing --}}
+                    {{-- Export existing --}}
                     <a href="{{ route('corporate.leagues.participants.export', $league) }}"
-                    class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                            dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                       class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
                         Export participants
                     </a>
 
-                    {{-- Upload button --}}
+                    {{-- Upload CSV --}}
                     <button wire:click="openCsv"
                             class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs
-                                hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
-                                dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500">
+                                   hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
+                                   dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500">
                         Upload CSV
                     </button>
-                    @endcorporate
                 </div>
             </div>
+        </div>
 
+        {{-- Public check-in URL + QR --}}
+        <div class="mt-6 grid gap-4 md:grid-cols-[1fr_auto]">
+            <div class="rounded-lg border border-gray-200 p-4 dark:border-white/10">
+                <div class="text-sm font-medium text-gray-900 dark:text-white">Public check-in link</div>
+                <div class="mt-2 flex items-center gap-2">
+                    <input type="text"
+                           readonly
+                           value="{{ $checkinUrl }}"
+                           class="block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-xs
+                                  focus:border-indigo-500 focus:ring-2 focus:ring-indigo-600 dark:border-white/10 dark:bg-white/5
+                                  dark:text-gray-200 dark:focus:border-indigo-400 dark:focus:ring-indigo-400" />
+                    <a href="{{ $checkinUrl }}"
+                       target="_blank"
+                       class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                        Open
+                    </a>
+                </div>
+                <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                    Share this link or the QR code with archers to check in on their phone.
+                </p>
+            </div>
+
+            <div class="flex items-center justify-center rounded-lg border border-gray-200 p-3 dark:border-white/10">
+                {{-- Zero-dep QR (uses a public QR image service). Replace with your in-app QR generator if preferred. --}}
+                <img
+                    alt="Check-in QR"
+                    class="h-36 w-36"
+                    src="{{ 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' . urlencode($checkinUrl) }}"
+                />
+            </div>
         </div>
     </div>
 
@@ -279,6 +326,7 @@ new class extends Component
                             <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Week</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Date</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Day</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Checked in</th>
                             <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
@@ -294,13 +342,16 @@ new class extends Component
                                 <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
                                     {{ \Carbon\Carbon::parse($w->date)->format('l') }}
                                 </td>
+                                <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                                    {{ $this->checkinsByWeek[$w->week_number] ?? 0 }}
+                                </td>
                                 <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
                                     <span class="text-xs opacity-60">—</span>
                                 </td>
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="4" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                <td colspan="5" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
                                     No weeks scheduled. Edit league to regenerate weeks.
                                 </td>
                             </tr>

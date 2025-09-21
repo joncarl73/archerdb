@@ -15,4 +15,9 @@ class LeagueWeek extends Model
     {
         return $this->belongsTo(League::class);
     }
+
+    public function checkins()
+    {
+        return $this->hasMany(\App\Models\LeagueCheckin::class, 'week_id');
+    }
 }
