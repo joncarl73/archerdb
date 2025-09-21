@@ -61,6 +61,12 @@
 
                 @corporate
                     <flux:navlist.group heading="Corporate" class="grid mt-2">
+                        <flux:navlist.item icon="numbered-list"
+                            :href="route('corporate.leagues.index')"
+                            :current="request()->routeIs('corporate.leagues.index')"
+                            wire:navigate>
+                        {{ __('Leagues') }}
+                        </flux:navlist.item>
                     </flux:navlist.group>
                 @endcorporate
 
