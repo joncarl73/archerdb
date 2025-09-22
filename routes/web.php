@@ -1,5 +1,6 @@
 <?php
 
+// ← NEW
 use App\Http\Controllers\PublicCheckinController;
 use App\Http\Controllers\PublicScoringController;
 use App\Models\League;
@@ -45,7 +46,6 @@ Route::middleware(['auth', 'admin'])
     });
 
 // Stop Impersonation Route
-// routes/web.php
 Route::middleware(['auth'])->group(function () {
     Route::post('/impersonation/stop', function () {
         $orig = session()->pull('impersonator_id');
@@ -104,6 +104,11 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
                 fclose($out);
             }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
         })->name('leagues.participants.export');
+
+        // Kiosk Manager (private) — already in your file
+        Volt::route('leagues/{league}/kiosks', 'corporate.kiosks.index')
+            ->name('manager.kiosks.index');
+
     });
 
 // --- PUBLIC (no auth) ---
@@ -126,7 +131,7 @@ Route::prefix('l/{uuid}')->group(function () {
     Route::get('/checkin/ok', [PublicCheckinController::class, 'ok'])
         ->name('public.checkin.ok'); // confirmation
 
-    // NEW: Personal-device scoring
+    // Personal-device scoring
     Route::get('/start-scoring/{checkin}', [PublicScoringController::class, 'start'])
         ->whereNumber('checkin')
         ->name('public.scoring.start');
@@ -136,7 +141,20 @@ Route::prefix('l/{uuid}')->group(function () {
         ->name('public.scoring.record');
 
     Route::get('/scoring/{score}/summary', [PublicScoringController::class, 'summary'])
+        ->whereNumber('score') // ← added for consistency
         ->name('public.scoring.summary');
 });
+
+/**
+ * NEW: Public kiosk tablet routes (unguarded, tokenized)
+ *  - /k/{token} shows the lane-filtered list of checked-in archers
+ *  - /k/{token}/score/{checkin} hands off to the existing scoring record screen
+ */
+Route::get('/k/{token}', [\App\Http\Controllers\KioskPublicController::class, 'landing'])
+    ->name('kiosk.landing');
+
+Route::get('/k/{token}/score/{checkin}', [\App\Http\Controllers\KioskPublicController::class, 'score'])
+    ->whereNumber('checkin')
+    ->name('kiosk.score');
 
 require __DIR__.'/auth.php';

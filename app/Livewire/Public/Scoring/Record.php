@@ -4,6 +4,7 @@ namespace App\Livewire\Public\Scoring;
 
 use App\Models\League;
 use App\Models\LeagueWeekScore;
+use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 use Livewire\Component;
 
@@ -15,26 +16,63 @@ class Record extends Component
 
     public LeagueWeekScore $score;       // bound via :score="$score"
 
-    // UI state (replaces “Undefined variable $selectedEnd”)
+    // UI state
     public bool $showKeypad = false;
 
-    public int $selectedEnd = 1;        // 1-based
+    public int $selectedEnd = 1;         // 1-based
 
-    public int $selectedArrow = 0;      // 0-based
+    public int $selectedArrow = 0;       // 0-based
 
     // display helpers
     public int $maxScore = 10;           // usually 10
 
     public string $scoringSystem = '10'; // for showing "X" label
 
-    public function mount(string $uuid, LeagueWeekScore $score): void
-    {
-        // Load league from uuid and guard mode + ownership
+    // kiosk context (passed from controller/blade)
+    public bool $kioskMode = false;
+
+    public ?string $kioskReturnTo = null;
+
+    /**
+     * Accept kiosk props so Blade like
+     * <livewire:public.scoring.record :kioskMode="$kioskMode" :kioskReturnTo="$kioskReturnTo" ... />
+     * actually reaches the component before our guard.
+     */
+    public function mount(
+        string $uuid,
+        LeagueWeekScore $score,
+        ?bool $kioskMode = null,
+        ?string $kioskReturnTo = null
+    ): void {
         $this->uuid = $uuid;
         $this->league = League::where('public_uuid', $uuid)->firstOrFail();
 
+        // assign kiosk props if provided
+        if (! is_null($kioskMode)) {
+            $this->kioskMode = (bool) $kioskMode;
+        }
+        if (! is_null($kioskReturnTo)) {
+            $this->kioskReturnTo = $kioskReturnTo;
+        }
+
+        // Guard: allow if kiosk handoff OR league mode is personal_device/kiosk/tablet
         $mode = $this->league->scoring_mode->value ?? $this->league->scoring_mode;
-        abort_unless($mode === 'personal_device', 404);
+        $allowed = $this->kioskMode || in_array((string) $mode, ['personal_device', 'kiosk', 'tablet'], true);
+
+        // (Optional) breadcrumb to confirm what we saw during mount
+        Log::debug('lw:record.mount', [
+            'uuid' => $uuid,
+            'league_id' => $this->league->id,
+            'mode' => (string) $mode,
+            'kioskMode' => $this->kioskMode,
+            'kioskReturnTo' => $this->kioskReturnTo,
+            'score_id' => $score->id ?? null,
+            'score_league_id' => $score->league_id ?? null,
+        ]);
+
+        abort_unless($allowed, 404, 'LW-G1');
+
+        // Ensure the score belongs to this league
         abort_unless($score->league_id === $this->league->id, 404);
 
         $this->score = $score->load(['ends' => fn ($q) => $q->orderBy('end_number')]);
@@ -126,7 +164,14 @@ class Record extends Component
 
     public function done(): void
     {
-        // League scoring: no auto-advance; “Done” just returns to the grid
+        if ($this->kioskMode && $this->kioskReturnTo) {
+            // Livewire 3: client-side navigate so tablet returns to list
+            $this->redirect($this->kioskReturnTo, navigate: true);
+
+            return;
+        }
+
+        // Personal device flow: close keypad and stay on grid
         $this->closeKeypad();
     }
 

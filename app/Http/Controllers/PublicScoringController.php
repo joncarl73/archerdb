@@ -8,8 +8,11 @@ use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueWeek;
 use App\Models\LeagueWeekScore;
-use Carbon\Carbon;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
+use Throwable;
 
 class PublicScoringController extends Controller
 {
@@ -22,7 +25,7 @@ class PublicScoringController extends Controller
     {
         $league = $this->leagueOr404($uuid);
 
-        // guard: must be personal_device
+        // personal-device only for this entry point
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
         abort_unless($mode === 'personal_device', 404);
 
@@ -31,11 +34,10 @@ class PublicScoringController extends Controller
 
         $participant = $checkin->participant;
 
-        // pick the "current" week (>= today, or nearest active)
-        $today = Carbon::today();
+        // ✅ Use the week selected at check-in (authoritative)
         $week = LeagueWeek::query()
             ->where('league_id', $league->id)
-            ->orderByRaw('CASE WHEN date >= ? THEN 0 ELSE 1 END, ABS(DATEDIFF(date, ?))', [$today, $today])
+            ->where('week_number', $checkin->week_number)
             ->firstOrFail();
 
         // find or create the week score
@@ -71,34 +73,90 @@ class PublicScoringController extends Controller
 
     public function record(Request $request, string $uuid, int $scoreId)
     {
-        $league = $this->leagueOr404($uuid);
-        $mode = $league->scoring_mode->value ?? $league->scoring_mode;
-        abort_unless($mode === 'personal_device', 404);
+        // Unique trace id for this request
+        $rid = uniqid('rec_', false);
+        $ctx = [
+            'rid' => $rid,
+            'uuid' => $uuid,
+            'scoreId' => $scoreId,
+            'route' => Route::currentRouteName(),
+            'fullUrl' => $request->fullUrl(),
+            'referer' => $request->headers->get('referer'),
+            'session_id' => $request->session()->getId(),
+        ];
 
-        $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])->findOrFail($scoreId);
-        abort_unless($score->league_id === $league->id, 404);
+        Log::debug('record:start', $ctx);
 
-        // Wrapper view mounts the Livewire component
+        // 1) League lookup
+        try {
+            $league = $this->leagueOr404($uuid);
+            $ctx['league_id'] = $league->id;
+            $mode = $league->scoring_mode->value ?? $league->scoring_mode;
+            $ctx['mode'] = (string) $mode;
+            Log::debug('record:league.ok', $ctx);
+        } catch (Throwable $e) {
+            Log::error('record:league.fail', $ctx + ['ex' => $e->getMessage()]);
+            abort(404, 'REC-E1'); // league not found
+        }
+
+        // 2) Session flags (kiosk handoff)
+        $kioskMode = (bool) $request->session()->get('kiosk_mode', false);
+        $kioskReturnTo = $request->session()->get('kiosk_return_to');
+        $ctx['kioskMode'] = $kioskMode;
+        $ctx['kioskReturnTo'] = $kioskReturnTo;
+
+        // 3) Guard: allow personal_device OR kiosk/tablet OR kiosk flag
+        $allowed = $kioskMode || in_array((string) $ctx['mode'], ['personal_device', 'kiosk', 'tablet'], true);
+        Log::debug('record:guard.check', $ctx + ['allowed' => $allowed]);
+        if (! $allowed) {
+            Log::warning('record:guard.block', $ctx);
+            abort(404, 'REC-G1'); // guard blocked
+        }
+
+        // 4) Load score scoped to league
+        try {
+            $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])
+                ->where('league_id', $league->id)
+                ->findOrFail($scoreId);
+
+            $ctx['score_league_id'] = $score->league_id;
+            $ctx['league_week_id'] = $score->league_week_id;
+            $ctx['participant_id'] = $score->league_participant_id;
+            Log::debug('record:score.ok', $ctx);
+        } catch (ModelNotFoundException $e) {
+            Log::warning('record:score.not_found', $ctx);
+            abort(404, 'REC-SNF'); // score id not found under this league
+        } catch (Throwable $e) {
+            Log::error('record:score.error', $ctx + ['ex' => $e->getMessage()]);
+            abort(404, 'REC-SE'); // other score error
+        }
+
+        // 5) Render
+        Log::debug('record:render', $ctx);
+
         return view('public.scoring.record', [
             'uuid' => $uuid,
             'score' => $score,
             'league' => $league,
+            'kioskMode' => $kioskMode,
+            'kioskReturnTo' => $kioskReturnTo,
         ]);
     }
 
-    /**
-     * NEW: End-scoring summary page
-     */
     public function summary(Request $request, string $uuid, int $scoreId)
     {
         $league = $this->leagueOr404($uuid);
+
+        $kioskMode = (bool) $request->session()->get('kiosk_mode', false);
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
-        abort_unless($mode === 'personal_device', 404);
+        $allowed = $kioskMode || in_array((string) $mode, ['personal_device', 'kiosk', 'tablet'], true);
+        abort_unless($allowed, 404);
 
-        $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])->findOrFail($scoreId);
-        abort_unless($score->league_id === $league->id, 404);
+        // ✅ Scope by league_id here too
+        $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])
+            ->where('league_id', $league->id)
+            ->findOrFail($scoreId);
 
-        // Derive summary stats from ends/scores
         $stats = $this->computeSummaryStats($score);
 
         return view('public.scoring.summary', array_merge([
@@ -120,8 +178,6 @@ class PublicScoringController extends Controller
         $endsCompleted = 0;
         $arrowsEntered = 0;
         $xCount = 0;
-
-        // If your model already tracks these, keep using them:
         $totalScore = (int) ($score->total_score ?? 0);
 
         foreach ($score->ends as $e) {
@@ -132,7 +188,7 @@ class PublicScoringController extends Controller
                         $arrowsEntered++;
                         $hasAny = true;
 
-                        // X-count: treat value == xValue as X when xValue is a special (>= max) value
+                        // Count X when value equals xValue and xValue represents the special ring
                         if ((int) $sv === $xValue && $xValue >= $maxPerArrow) {
                             $xCount++;
                         }
