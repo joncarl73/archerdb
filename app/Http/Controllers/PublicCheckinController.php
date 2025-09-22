@@ -58,7 +58,7 @@ class PublicCheckinController extends Controller
             ->get(['id', 'week_number', 'date']);
 
         // ✅ Use short letters, not human labels
-        $letters = $league->lane_breakdown->letters();          // [] or ['A','B'] or ['A','B','C','D']
+        $letters = $league->lane_breakdown->letters();                 // [] or ['A','B'] or ['A','B','C','D']
         $positionsPerLane = $league->lane_breakdown->positionsPerLane(); // 1,2,4
 
         $laneOptions = [];
@@ -144,11 +144,12 @@ class PublicCheckinController extends Controller
                     'ok_repeat' => true,
                     'ok_week' => $weekNumber,
                     'ok_lane' => $laneLabel,
+                    'ok_checkin_id' => $existing->id, // ← NEW: needed for Start scoring
                 ]);
         }
 
         // New check-in
-        LeagueCheckin::create([
+        $checkin = LeagueCheckin::create([
             'league_id' => $league->id,
             'participant_id' => $p->id,
             'participant_name' => trim($p->first_name.' '.$p->last_name),
@@ -166,19 +167,29 @@ class PublicCheckinController extends Controller
                 'ok_repeat' => false,
                 'ok_week' => $weekNumber,
                 'ok_lane' => $laneLabel,
+                'ok_checkin_id' => $checkin->id, // ← NEW: needed for Start scoring
             ]);
     }
 
     public function ok(string $uuid)
     {
         $league = $this->leagueOr404($uuid);
-        $name = session('ok_name');          // string|null
-        $repeat = (bool) session('ok_repeat'); // true if already checked in
-        $week = session('ok_week');          // int|null
-        $lane = session('ok_lane');          // string like "5" or "5A"
+
+        $name = session('ok_name');                // string|null
+        $repeat = (bool) session('ok_repeat', false);
+        $week = session('ok_week');                // int|null
+        $lane = session('ok_lane');                // string like "5" or "5A"
+        $checkinId = session('ok_checkin_id');          // int|null
 
         // If someone hits this page directly without a session, show a gentle fallback
-        return response()->view('public.checkin.ok', compact('league', 'name', 'repeat', 'week', 'lane'));
+        return response()->view('public.checkin.ok', [
+            'league' => $league,
+            'name' => $name,
+            'repeat' => $repeat,
+            'week' => $week,
+            'lane' => $lane,
+            'checkinId' => $checkinId, // Blade uses this to build the Start scoring link
+        ]);
     }
 
     public function week(League $league, string $participant)

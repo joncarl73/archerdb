@@ -1,7 +1,9 @@
 <?php
 
 use App\Http\Controllers\PublicCheckinController;
+use App\Http\Controllers\PublicScoringController;
 use App\Models\League;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
 
@@ -106,9 +108,6 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
 
 // --- PUBLIC (no auth) ---
 Route::prefix('l/{uuid}')->group(function () {
-    // Public league page (you already have this)
-    // Route::get('/', [PublicLeagueController::class, 'show'])->name('leagues.public');
-
     // Public check-in flow
     Route::get('/checkin', [PublicCheckinController::class, 'participants'])
         ->name('public.checkin.participants'); // pick participant
@@ -126,6 +125,15 @@ Route::prefix('l/{uuid}')->group(function () {
 
     Route::get('/checkin/ok', [PublicCheckinController::class, 'ok'])
         ->name('public.checkin.ok'); // confirmation
+
+    // NEW: Personal-device scoring
+    Route::get('/start-scoring/{checkin}', [PublicScoringController::class, 'start'])
+        ->whereNumber('checkin')
+        ->name('public.scoring.start');
+
+    Route::get('/score/{score}', [PublicScoringController::class, 'record'])
+        ->whereNumber('score')
+        ->name('public.scoring.record');
 });
 
 require __DIR__.'/auth.php';

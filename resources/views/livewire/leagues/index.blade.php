@@ -44,15 +44,20 @@ new class extends Component
 
     public bool $is_published = false;
 
-    // NEW: lanes
-    public int $lanes_count = 10;          // 1..100
+    // Lanes
+    public int $lanes_count = 10;              // 1..100
 
-    public string $lane_breakdown = 'single'; // single|ab|abcd
+    public string $lane_breakdown = 'single';  // single|ab|abcd
 
-    // NEW: Scoring Defaults
+    // Scoring Defaults
     public int $ends_per_day = 10;
 
     public int $arrows_per_end = 3;
+
+    // NEW: League-level scoring settings
+    public int $x_ring_value = 10;                 // 10 or 11
+
+    public string $scoring_mode = 'personal_device'; // personal_device | tablet
 
     // --- lifecycle ---
     public function updatingSort()
@@ -155,11 +160,15 @@ new class extends Component
         $this->type = $league->type->value ?? (string) $league->type;
         $this->is_published = (bool) $league->is_published;
 
-        // NEW: lanes
+        // lanes
         $this->lanes_count = (int) ($league->lanes_count ?? 10);
-        $this->lane_breakdown = $league->lane_breakdown_value ?? 'single'; // ← use accessor
+        $this->lane_breakdown = $league->lane_breakdown_value ?? 'single'; // accessor-safe
         $this->ends_per_day = (int) ($league->ends_per_day ?? 10);
         $this->arrows_per_end = (int) ($league->arrows_per_end ?? 3);
+
+        // NEW: scoring settings (enum-cast or scalar-safe)
+        $this->x_ring_value = (int) ($league->x_ring_value->value ?? $league->x_ring_value ?? 10);
+        $this->scoring_mode = (string) ($league->scoring_mode->value ?? $league->scoring_mode ?? 'personal_device');
 
         $this->showSheet = true;
     }
@@ -175,12 +184,18 @@ new class extends Component
             'start_date' => ['required', 'date'],
             'type' => ['required', 'in:open,closed'],
             'is_published' => ['boolean'],
-            // NEW:
+
+            // lanes
             'lanes_count' => ['required', 'integer', 'between:1,100'],
             'lane_breakdown' => ['required', 'in:single,ab,abcd'],
-            // NEW: Scoring fields
+
+            // scoring defaults
             'ends_per_day' => ['required', 'integer', 'between:1,60'],
             'arrows_per_end' => ['required', 'integer', 'between:1,12'],
+
+            // NEW: league-level scoring settings
+            'x_ring_value' => ['required', 'integer', 'in:10,11'],
+            'scoring_mode' => ['required', 'in:personal_device,tablet'],
         ]);
 
         if ($this->editingId) {
@@ -195,11 +210,15 @@ new class extends Component
                 'start_date' => $this->start_date,
                 'type' => $this->type,
                 'is_published' => $this->is_published,
-                // NEW:
+
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
                 'ends_per_day' => $this->ends_per_day,
                 'arrows_per_end' => $this->arrows_per_end,
+
+                // NEW
+                'x_ring_value' => $this->x_ring_value,
+                'scoring_mode' => $this->scoring_mode,
             ]);
 
             // refresh weeks on edit
@@ -214,9 +233,17 @@ new class extends Component
                 'start_date' => $this->start_date,
                 'type' => $this->type,
                 'is_published' => $this->is_published,
-                // NEW:
+
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
+
+                // Defaults captured on create as well (nice for downstream logic)
+                'ends_per_day' => $this->ends_per_day,
+                'arrows_per_end' => $this->arrows_per_end,
+
+                // NEW
+                'x_ring_value' => $this->x_ring_value,
+                'scoring_mode' => $this->scoring_mode,
             ]);
 
             // generate weeks on create
@@ -256,11 +283,17 @@ new class extends Component
         $this->type = 'open';
         $this->is_published = false;
 
-        // NEW:
+        // lanes
         $this->lanes_count = 10;
         $this->lane_breakdown = 'single';
+
+        // scoring defaults
         $this->ends_per_day = 10;
         $this->arrows_per_end = 3;
+
+        // NEW
+        $this->x_ring_value = 10;
+        $this->scoring_mode = 'personal_device';
     }
 };
 ?>
@@ -300,9 +333,11 @@ new class extends Component
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Type</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Starts</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Weeks</th>
-                            {{-- NEW: Lanes/Capacity --}}
+                            {{-- Lanes/Capacity --}}
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">Lanes</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Ends × Arrows</th>
+                            {{-- NEW: Scoring --}}
+                            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Scoring</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Status</th>
                             <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
                         </tr>
@@ -313,6 +348,9 @@ new class extends Component
                                 $mode = $lg->lane_breakdown_value; // always a string
                                 $per  = $mode === 'ab' ? 2 : ($mode === 'abcd' ? 4 : 1);
                                 $cap  = max(0, (int)($lg->lanes_count ?? 0)) * $per;
+
+                                $xVal = (int)($lg->x_ring_value->value ?? $lg->x_ring_value ?? 10);
+                                $sMode = (string)($lg->scoring_mode->value ?? $lg->scoring_mode ?? 'personal_device');
                             @endphp
                             <tr>
                                 <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
@@ -332,7 +370,7 @@ new class extends Component
                                     {{ $lg->length_weeks }} wk
                                 </td>
 
-                                {{-- NEW: lanes and capacity --}}
+                                {{-- Lanes and capacity --}}
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 lg:table-cell dark:text-gray-400">
                                     {{ (int)($lg->lanes_count ?? 0) }} lanes •
                                     @if($mode === 'ab') A/B
@@ -346,6 +384,10 @@ new class extends Component
                                     <span class="text-xs opacity-70">({{ $lg->ends_per_day * $lg->arrows_per_end }} total)</span>
                                 </td>
 
+                                {{-- NEW: Scoring summary --}}
+                                <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
+                                    X={{ $xVal }} • {{ $sMode === 'tablet' ? 'Tablet' : 'Personal' }}
+                                </td>
 
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     @if($lg->is_published)
@@ -398,7 +440,7 @@ new class extends Component
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="7" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                <td colspan="9" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
                                     No leagues yet. Click “New league” to create your first one.
                                 </td>
                             </tr>
@@ -503,7 +545,7 @@ new class extends Component
                         </div>
                     </div>
 
-                    {{-- NEW: Lanes config --}}
+                    {{-- Lanes config --}}
                     <div class="grid gap-4 md:grid-cols-3">
                         <div>
                             <flux:label for="lanes_count"># Lanes</flux:label>
@@ -545,6 +587,38 @@ new class extends Component
                         </div>
                     </div>
 
+                    {{-- NEW: League-level scoring settings --}}
+                    <div class="grid gap-4 md:grid-cols-3">
+                        <div>
+                            <flux:label>X-ring value</flux:label>
+                            <div class="mt-2 flex items-center gap-4">
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" wire:model="x_ring_value" value="10" class="accent-current">
+                                    <span>10</span>
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" wire:model="x_ring_value" value="11" class="accent-current">
+                                    <span>11</span>
+                                </label>
+                            </div>
+                            @error('x_ring_value') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                        </div>
+
+                        <div class="md:col-span-2">
+                            <flux:label>Scoring mode</flux:label>
+                            <div class="mt-2 flex items-center gap-6">
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" wire:model="scoring_mode" value="personal_device" class="accent-current">
+                                    <span>Personal device</span>
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" wire:model="scoring_mode" value="tablet" class="accent-current">
+                                    <span>Tablet (kiosk)</span>
+                                </label>
+                            </div>
+                            @error('scoring_mode') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                        </div>
+                    </div>
 
                     <div class="grid gap-4 md:grid-cols-2">
                         <div>
