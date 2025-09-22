@@ -130,21 +130,17 @@ class PublicCheckinController extends Controller
             ->first();
 
         if ($existing) {
-            // Update lane if changed; refresh timestamp to reflect recent check-in action
-            $existing->update([
-                'lane_number' => $laneNumber,
-                'lane_slot' => $laneSlot,
-                'checked_in_at' => now(),
-            ]);
+            // 🚫 Do NOT change lane, week, or timestamps — keep original record as-is
+            $origLaneLabel = $existing->lane_number.($existing->lane_slot === 'single' ? '' : $existing->lane_slot);
 
             return redirect()
                 ->route('public.checkin.ok', ['uuid' => $uuid])
                 ->with([
                     'ok_name' => $p->first_name.' '.$p->last_name,
                     'ok_repeat' => true,
-                    'ok_week' => $weekNumber,
-                    'ok_lane' => $laneLabel,
-                    'ok_checkin_id' => $existing->id, // ← NEW: needed for Start scoring
+                    'ok_week' => $existing->week_number,
+                    'ok_lane' => $origLaneLabel,
+                    'ok_checkin_id' => $existing->id, // still handy for "Start scoring"
                 ]);
         }
 

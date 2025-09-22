@@ -75,7 +75,7 @@ class PublicScoringController extends Controller
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
         abort_unless($mode === 'personal_device', 404);
 
-        $score = \App\Models\LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])->findOrFail($scoreId);
+        $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])->findOrFail($scoreId);
         abort_unless($score->league_id === $league->id, 404);
 
         // Wrapper view mounts the Livewire component
@@ -84,5 +84,83 @@ class PublicScoringController extends Controller
             'score' => $score,
             'league' => $league,
         ]);
+    }
+
+    /**
+     * NEW: End-scoring summary page
+     */
+    public function summary(Request $request, string $uuid, int $scoreId)
+    {
+        $league = $this->leagueOr404($uuid);
+        $mode = $league->scoring_mode->value ?? $league->scoring_mode;
+        abort_unless($mode === 'personal_device', 404);
+
+        $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])->findOrFail($scoreId);
+        abort_unless($score->league_id === $league->id, 404);
+
+        // Derive summary stats from ends/scores
+        $stats = $this->computeSummaryStats($score);
+
+        return view('public.scoring.summary', array_merge([
+            'league' => $league,
+            'score' => $score,
+        ], $stats));
+    }
+
+    /**
+     * Helper: compute totals/averages/completion/X stats.
+     */
+    protected function computeSummaryStats(LeagueWeekScore $score): array
+    {
+        $plannedEnds = (int) ($score->ends_planned ?? $score->ends->count());
+        $arrowsPerEnd = (int) $score->arrows_per_end;
+        $maxPerArrow = (int) $score->max_score;
+        $xValue = (int) ($score->x_value ?? 10);
+
+        $endsCompleted = 0;
+        $arrowsEntered = 0;
+        $xCount = 0;
+
+        // If your model already tracks these, keep using them:
+        $totalScore = (int) ($score->total_score ?? 0);
+
+        foreach ($score->ends as $e) {
+            $hasAny = false;
+            if (is_array($e->scores)) {
+                foreach ($e->scores as $sv) {
+                    if (! is_null($sv)) {
+                        $arrowsEntered++;
+                        $hasAny = true;
+
+                        // X-count: treat value == xValue as X when xValue is a special (>= max) value
+                        if ((int) $sv === $xValue && $xValue >= $maxPerArrow) {
+                            $xCount++;
+                        }
+                    }
+                }
+            }
+            if ($hasAny) {
+                $endsCompleted++;
+            }
+        }
+
+        $maxPossibleEntered = $arrowsEntered * $maxPerArrow;
+        $avgPerArrow = $arrowsEntered ? round($totalScore / $arrowsEntered, 2) : 0.0;
+        $completionPct = $plannedEnds ? round(($endsCompleted / $plannedEnds) * 100) : 0;
+        $xRate = $arrowsEntered ? round(($xCount / $arrowsEntered) * 100) : 0;
+
+        return [
+            'plannedEnds' => $plannedEnds,
+            'arrowsPerEnd' => $arrowsPerEnd,
+            'endsCompleted' => $endsCompleted,
+            'arrowsEntered' => $arrowsEntered,
+            'maxPerArrow' => $maxPerArrow,
+            'totalScore' => $totalScore,
+            'maxPossibleEntered' => $maxPossibleEntered,
+            'avgPerArrow' => $avgPerArrow,
+            'completionPct' => $completionPct,
+            'xCount' => $xCount,
+            'xRate' => $xRate,
+        ];
     }
 }

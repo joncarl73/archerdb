@@ -134,6 +134,9 @@ Route::prefix('l/{uuid}')->group(function () {
     Route::get('/score/{score}', [PublicScoringController::class, 'record'])
         ->whereNumber('score')
         ->name('public.scoring.record');
+
+    Route::get('/scoring/{score}/summary', [PublicScoringController::class, 'summary'])
+        ->name('public.scoring.summary');
 });
 
 require __DIR__.'/auth.php';
