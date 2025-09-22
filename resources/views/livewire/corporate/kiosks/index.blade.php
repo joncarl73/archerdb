@@ -20,10 +20,14 @@ new class extends Component
 
     public $weeks;
 
-    public $sessions;
+    /** @var \Illuminate\Support\Collection|\App\Models\KioskSession[] */
+    public $sessions;              // filtered list shown in the table
 
     // flash reveal
     public ?string $createdToken = null;
+
+    // optional: let manager reveal all sessions
+    public bool $showAll = false;
 
     public function mount(League $league): void
     {
@@ -33,7 +37,7 @@ new class extends Component
             'weeks' => fn ($q) => $q->orderBy('week_number'),
         ]);
 
-        // weeks list for select
+        // Week options
         $this->weeks = $this->league->weeks->map(fn ($w) => [
             'week_number' => (int) $w->week_number,
             'date' => $w->date,
@@ -41,12 +45,8 @@ new class extends Component
 
         $this->week_number = (int) ($this->weeks[0]['week_number'] ?? 1);
 
-        // sessions table
-        $this->sessions = KioskSession::where('league_id', $league->id)
-            ->latest()->get();
-
-        // lane options (exactly like your public check-in)
-        $letters = $league->lane_breakdown->letters();                  // [] or ['A','B'] or ['A','B','C','D']
+        // Lane options (same logic as public check-in)
+        $letters = $league->lane_breakdown->letters();                 // [] | ['A','B'] | ['A','B','C','D']
         $positionsPerLane = $league->lane_breakdown->positionsPerLane(); // 1,2,4
         $opts = [];
         for ($i = 1; $i <= (int) $league->lanes_count; $i++) {
@@ -59,6 +59,44 @@ new class extends Component
             }
         }
         $this->laneOptions = $opts;
+
+        // initial filtered list
+        $this->refreshSessions();
+    }
+
+    /** Re-fetch sessions based on filter state */
+    public function refreshSessions(): void
+    {
+        $base = KioskSession::where('league_id', $this->league->id)->latest();
+
+        if (! $this->showAll) {
+            $base->where('week_number', $this->week_number);
+        }
+
+        $this->sessions = $base->get();
+    }
+
+    /** When week changes via dropdown, refresh the filtered table */
+    public function updatedWeekNumber(): void
+    {
+        // Ensure the selected week is valid for this league
+        $exists = LeagueWeek::where('league_id', $this->league->id)
+            ->where('week_number', $this->week_number)->exists();
+
+        if (! $exists) {
+            $this->addError('week_number', 'Selected week does not exist for this league.');
+
+            return;
+        }
+
+        $this->refreshSessions();
+    }
+
+    /** Toggle the all/filtered view for convenience */
+    public function toggleShowAll(): void
+    {
+        $this->showAll = ! $this->showAll;
+        $this->refreshSessions();
     }
 
     public function createSession(): void
@@ -74,6 +112,7 @@ new class extends Component
         // ensure the week exists on this league
         $exists = LeagueWeek::where('league_id', $this->league->id)
             ->where('week_number', $this->week_number)->exists();
+
         if (! $exists) {
             $this->addError('week_number', 'Selected week does not exist for this league.');
 
@@ -89,12 +128,10 @@ new class extends Component
             'created_by' => auth()->id(),
         ]);
 
-        // refresh list, reset form, show token
-        $this->sessions = KioskSession::where('league_id', $this->league->id)
-            ->latest()->get();
-
+        // refresh (respect current filter)
         $this->lanes = [];
         $this->createdToken = $session->token;
+        $this->refreshSessions();
 
         $this->dispatch('toast', type: 'success', message: 'Kiosk session created.');
     }
@@ -107,8 +144,7 @@ new class extends Component
         $s->is_active = ! $s->is_active;
         $s->save();
 
-        $this->sessions = KioskSession::where('league_id', $this->league->id)
-            ->latest()->get();
+        $this->refreshSessions();
     }
 };
 ?>
@@ -158,18 +194,16 @@ new class extends Component
             </p>
 
             <form wire:submit.prevent="createSession" class="mt-5 space-y-6">
-                {{-- Week select --}}
+                {{-- Week (Flux select) --}}
                 <div>
-                    <label for="week_number" class="block text-sm font-medium text-gray-800 dark:text-gray-200">Week</label>
-                    <select id="week_number" wire:model="week_number"
-                            class="mt-2 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm
-                                   focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
+                    <flux:label for="week_number">Week</flux:label>
+                    <flux:select id="week_number" wire:model.live="week_number" class="mt-2 w-full">
                         @foreach ($weeks as $w)
                             <option value="{{ $w['week_number'] }}">
                                 Week {{ $w['week_number'] }} — {{ \Illuminate\Support\Carbon::parse($w['date'])->toFormattedDateString() }}
                             </option>
                         @endforeach
-                    </select>
+                    </flux:select>
                     @error('week_number') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
                 </div>
 
@@ -206,85 +240,101 @@ new class extends Component
             </form>
         </div>
 
-        {{-- Sessions table --}}
-        <div class="mt-8 overflow-hidden rounded-2xl border border-gray-200 shadow-sm dark:border-white/10">
-            <table class="w-full text-left">
-                <thead class="bg-white dark:bg-gray-900">
-                    <tr>
-                        <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Created</th>
-                        <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Week</th>
-                        <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Lanes</th>
-                        <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Status</th>
-                        <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Tablet URL</th>
-                        <th class="py-3.5 pl-3 pr-4 text-right"><span class="sr-only">Actions</span></th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-white/10 bg-white dark:bg-transparent">
-                    @forelse ($sessions as $s)
-                        @php($url = url('/k/'.$s->token))
+        {{-- Sessions table (filtered by selected week unless "Show all" is on) --}}
+        <div class="mt-8">
+            <div class="mb-2 flex items-center justify-between">
+                <div class="text-sm text-gray-700 dark:text-gray-300">
+                    Showing
+                    @if ($showAll)
+                        <span class="font-medium">all</span>
+                    @else
+                        sessions for <span class="font-medium">week {{ $week_number }}</span>
+                    @endif
+                </div>
+                <flux:button variant="ghost" size="sm" wire:click="toggleShowAll">
+                    {{ $showAll ? 'Filter by week' : 'Show all' }}
+                </flux:button>
+            </div>
+
+            <div class="overflow-hidden rounded-2xl border border-gray-200 shadow-sm dark:border-white/10">
+                <table class="w-full text-left">
+                    <thead class="bg-white dark:bg-gray-900">
                         <tr>
-                            <td class="py-3.5 pl-4 pr-3 text-sm text-gray-800 dark:text-gray-200">
-                                {{ $s->created_at?->format('Y-m-d H:i') ?? '—' }}
-                            </td>
-                            <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
-                                Week {{ $s->week_number }}
-                            </td>
-                            <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
-                                @if (is_array($s->lanes) && count($s->lanes))
-                                    <div class="flex flex-wrap gap-1">
-                                        @foreach ($s->lanes as $lc)
-                                            <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">
-                                                {{ $lc }}
-                                            </span>
-                                        @endforeach
-                                    </div>
-                                @else
-                                    —
-                                @endif
-                            </td>
-                            <td class="px-3 py-3.5 text-sm">
-                                @if ($s->is_active)
-                                    <span class="rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">Active</span>
-                                @else
-                                    <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">Inactive</span>
-                                @endif
-                            </td>
-                            <td class="px-3 py-3.5 text-sm">
-                                <a href="{{ $url }}" class="truncate text-indigo-600 underline hover:no-underline dark:text-indigo-400" target="_blank" rel="noopener">
-                                    {{ $url }}
-                                </a>
-                            </td>
-                            <td class="py-3.5 pl-3 pr-4 text-right">
-                                <div class="inline-flex items-center gap-2">
-                                    <a href="{{ $url }}" target="_blank" rel="noopener"
-                                       class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
-                                        Open
+                            <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Created</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Week</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Lanes</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Status</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Tablet URL</th>
+                            <th class="py-3.5 pl-3 pr-4 text-right"><span class="sr-only">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-white/10 bg-white dark:bg-transparent">
+                        @forelse ($sessions as $s)
+                            @php($url = url('/k/'.$s->token))
+                            <tr>
+                                <td class="py-3.5 pl-4 pr-3 text-sm text-gray-800 dark:text-gray-200">
+                                    {{ $s->created_at?->format('Y-m-d H:i') ?? '—' }}
+                                </td>
+                                <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
+                                    Week {{ $s->week_number }}
+                                </td>
+                                <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
+                                    @if (is_array($s->lanes) && count($s->lanes))
+                                        <div class="flex flex-wrap gap-1">
+                                            @foreach ($s->lanes as $lc)
+                                                <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">
+                                                    {{ $lc }}
+                                                </span>
+                                            @endforeach
+                                        </div>
+                                    @else
+                                        —
+                                    @endif
+                                </td>
+                                <td class="px-3 py-3.5 text-sm">
+                                    @if ($s->is_active)
+                                        <span class="rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">Active</span>
+                                    @else
+                                        <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">Inactive</span>
+                                    @endif
+                                </td>
+                                <td class="px-3 py-3.5 text-sm">
+                                    <a href="{{ $url }}" class="truncate text-indigo-600 underline hover:no-underline dark:text-indigo-400" target="_blank" rel="noopener">
+                                        {{ $url }}
                                     </a>
-                                    <button type="button"
-                                            x-data="{copied:false}"
-                                            @click="navigator.clipboard.writeText('{{ $url }}'); copied=true; setTimeout(()=>copied=false,1500)"
-                                            class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                   dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                                        <span x-show="!copied">Copy</span>
-                                        <span x-show="copied">Copied!</span>
-                                    </button>
-                                    <button wire:click="toggleSession({{ $s->id }})"
-                                            class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                   dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                                        {{ $s->is_active ? 'Deactivate' : 'Activate' }}
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
-                                No kiosk sessions yet.
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
+                                </td>
+                                <td class="py-3.5 pl-3 pr-4 text-right">
+                                    <div class="inline-flex items-center gap-2">
+                                        <a href="{{ $url }}" target="_blank" rel="noopener"
+                                           class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                            Open
+                                        </a>
+                                        <button type="button"
+                                                x-data="{copied:false}"
+                                                @click="navigator.clipboard.writeText('{{ $url }}'); copied=true; setTimeout(()=>copied=false,1500)"
+                                                class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                                                       dark:bg:white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                                            <span x-show="!copied">Copy</span>
+                                            <span x-show="copied">Copied!</span>
+                                        </button>
+                                        <button wire:click="toggleSession({{ $s->id }})"
+                                                class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                                                       dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                                            {{ $s->is_active ? 'Deactivate' : 'Activate' }}
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                    No kiosk sessions {{ $showAll ? 'yet' : 'for week '.$week_number }}.
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
         </div>
 
     </div>
