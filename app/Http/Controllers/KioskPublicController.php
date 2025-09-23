@@ -6,6 +6,7 @@ namespace App\Http\Controllers;
 
 use App\Models\KioskSession;
 use App\Models\LeagueCheckin;
+use App\Models\LeagueParticipant;
 use App\Models\LeagueWeek;
 use App\Models\LeagueWeekScore;
 
@@ -13,46 +14,83 @@ class KioskPublicController extends Controller
 {
     public function landing(string $token)
     {
-        $session = KioskSession::where('token', $token)->where('is_active', true)->firstOrFail();
+        $session = KioskSession::where('token', $token)
+            ->where('is_active', true)
+            ->firstOrFail();
+
         $league = $session->league;
 
-        // Find the exact LeagueWeek row for the session's week_number
+        // Exact LeagueWeek row for the session's week_number
         $week = LeagueWeek::where('league_id', $league->id)
-            ->where('week_number', $session->week_number)->firstOrFail();
+            ->where('week_number', $session->week_number)
+            ->firstOrFail();
 
-        // All check-ins that match that week and the selected lanes
+        // Normalize participants array (handle raw JSON string or null)
+        $participantIds = is_array($session->participants)
+            ? $session->participants
+            : (json_decode((string) $session->participants, true) ?: []);
+        $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
+
+        // Only assigned + checked-in archers for this week
         $checkins = LeagueCheckin::with('participant')
             ->where('league_id', $league->id)
             ->where('week_number', $session->week_number)
-            ->where(function ($q) use ($session) {
-                $q->whereIn(\DB::raw("CONCAT(lane_number, CASE WHEN lane_slot='single' THEN '' ELSE lane_slot END)"), $session->lanes);
-            })
-            ->orderBy('lane_number')->orderBy('lane_slot')
+            ->when(count($participantIds) > 0, fn ($q) => $q->whereIn('participant_id', $participantIds))
+            ->orderBy('lane_number')
+            ->orderBy('lane_slot')
             ->get();
+
+        // Optional: names for header chips
+        $assignedNames = [];
+        if (count($participantIds)) {
+            $assignedNames = LeagueParticipant::where('league_id', $league->id)
+                ->whereIn('id', $participantIds)
+                ->orderBy('last_name')
+                ->orderBy('first_name')
+                ->get(['first_name', 'last_name'])
+                ->map(fn ($p) => trim(($p->first_name ?? '').' '.($p->last_name ?? '')))
+                ->all();
+        }
 
         return view('public.kiosk.landing', [
             'session' => $session,
             'league' => $league,
             'week' => $week,
             'checkins' => $checkins,
+            'assignedNames' => $assignedNames, // optional chips in header
         ]);
     }
 
-    // handoff to scoring (creates/loads LeagueWeekScore then jumps to record in kiosk mode)
+    // Handoff to scoring (creates/loads LeagueWeekScore then jumps to record in kiosk mode)
     public function score(string $token, int $checkinId)
     {
-        $session = KioskSession::where('token', $token)->where('is_active', true)->firstOrFail();
+        $session = KioskSession::where('token', $token)
+            ->where('is_active', true)
+            ->firstOrFail();
+
         $league = $session->league;
 
-        $checkin = \App\Models\LeagueCheckin::with('participant')->findOrFail($checkinId);
+        $checkin = LeagueCheckin::with('participant')->findOrFail($checkinId);
+
         abort_unless($checkin->league_id === $league->id, 404);
         abort_unless($checkin->week_number === $session->week_number, 404);
 
-        // find/create WeekScore exactly like your PublicScoringController@start
-        $week = \App\Models\LeagueWeek::where('league_id', $league->id)
-            ->where('week_number', $session->week_number)->firstOrFail();
+        // Extra guard: ensure this archer is actually assigned to this kiosk session
+        $participantIds = is_array($session->participants)
+            ? $session->participants
+            : (json_decode((string) $session->participants, true) ?: []);
+        $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
 
-        $score = \App\Models\LeagueWeekScore::firstOrCreate(
+        if (! in_array((int) $checkin->participant_id, $participantIds, true)) {
+            abort(404); // not part of this kiosk assignment
+        }
+
+        // Find/create WeekScore (same defaults as personal-device start)
+        $week = LeagueWeek::where('league_id', $league->id)
+            ->where('week_number', $session->week_number)
+            ->firstOrFail();
+
+        $score = LeagueWeekScore::firstOrCreate(
             [
                 'league_id' => $league->id,
                 'league_week_id' => $week->id,
@@ -66,7 +104,7 @@ class KioskPublicController extends Controller
             ]
         );
 
-        // seed ends if needed (same as your start())
+        // Seed ends if needed
         $existing = $score->ends()->count();
         if ($existing < $score->ends_planned) {
             for ($i = $existing + 1; $i <= $score->ends_planned; $i++) {
@@ -79,10 +117,11 @@ class KioskPublicController extends Controller
             }
         }
 
-        // IMPORTANT: pass kiosk flag + return URL to the record page
+        // Pass kiosk flags to the record page so it returns to kiosk after “Done”
         $returnTo = route('kiosk.landing', $token);
 
-        return redirect()->route('public.scoring.record', [$league->public_uuid, $score->id])
+        return redirect()
+            ->route('public.scoring.record', [$league->public_uuid, $score->id])
             ->with(['kiosk_mode' => true, 'kiosk_return_to' => $returnTo]);
     }
 }

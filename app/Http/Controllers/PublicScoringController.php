@@ -25,16 +25,20 @@ class PublicScoringController extends Controller
     {
         $league = $this->leagueOr404($uuid);
 
-        // personal-device only for this entry point
+        // NEW: allow explicit PD override via ?pd=1 (for makeups/off-night)
+        $forcePD = $request->boolean('pd');
+
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
-        abort_unless($mode === 'personal_device', 404);
+
+        // If league is personal_device OR we explicitly force PD, allow; otherwise 404
+        abort_unless($forcePD || $mode === 'personal_device', 404);
 
         $checkin = LeagueCheckin::with('participant')->findOrFail($checkinId);
         abort_unless($checkin->league_id === $league->id, 404);
 
         $participant = $checkin->participant;
 
-        // ✅ Use the week selected at check-in (authoritative)
+        // Use the week selected at check-in (authoritative for makeups)
         $week = LeagueWeek::query()
             ->where('league_id', $league->id)
             ->where('week_number', $checkin->week_number)
@@ -68,6 +72,7 @@ class PublicScoringController extends Controller
             }
         }
 
+        // IMPORTANT: in PD override we do NOT set kiosk session flags
         return redirect()->route('public.scoring.record', [$league->public_uuid, $score->id]);
     }
 
@@ -152,7 +157,7 @@ class PublicScoringController extends Controller
         $allowed = $kioskMode || in_array((string) $mode, ['personal_device', 'kiosk', 'tablet'], true);
         abort_unless($allowed, 404);
 
-        // ✅ Scope by league_id here too
+        // Scope by league_id
         $score = LeagueWeekScore::with(['ends' => fn ($q) => $q->orderBy('end_number')])
             ->where('league_id', $league->id)
             ->findOrFail($scoreId);
@@ -165,9 +170,6 @@ class PublicScoringController extends Controller
         ], $stats));
     }
 
-    /**
-     * Helper: compute totals/averages/completion/X stats.
-     */
     protected function computeSummaryStats(LeagueWeekScore $score): array
     {
         $plannedEnds = (int) ($score->ends_planned ?? $score->ends->count());
@@ -188,7 +190,6 @@ class PublicScoringController extends Controller
                         $arrowsEntered++;
                         $hasAny = true;
 
-                        // Count X when value equals xValue and xValue represents the special ring
                         if ((int) $sv === $xValue && $xValue >= $maxPerArrow) {
                             $xCount++;
                         }

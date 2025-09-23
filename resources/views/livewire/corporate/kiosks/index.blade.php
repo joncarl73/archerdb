@@ -1,6 +1,7 @@
 <?php
 use App\Models\KioskSession;
 use App\Models\League;
+use App\Models\LeagueCheckin;
 use App\Models\LeagueWeek;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
@@ -13,31 +14,25 @@ new class extends Component
     // form state
     public int $week_number = 1;
 
-    public array $lanes = [];
+    public array $participantIds = [];
 
     // derived for UI
-    public array $laneOptions = []; // ['1','1A','1B',...]
+    public array $participantsForWeek = []; // available (checked-in but not assigned) archers
 
     public $weeks;
 
-    /** @var \Illuminate\Support\Collection|\App\Models\KioskSession[] */
     public $sessions;              // filtered list shown in the table
 
-    // flash reveal
     public ?string $createdToken = null;
 
-    // optional: let manager reveal all sessions
     public bool $showAll = false;
 
     public function mount(League $league): void
     {
         Gate::authorize('update', $league);
 
-        $this->league = $league->load([
-            'weeks' => fn ($q) => $q->orderBy('week_number'),
-        ]);
+        $this->league = $league->load(['weeks' => fn ($q) => $q->orderBy('week_number')]);
 
-        // Week options
         $this->weeks = $this->league->weeks->map(fn ($w) => [
             'week_number' => (int) $w->week_number,
             'date' => $w->date,
@@ -45,26 +40,62 @@ new class extends Component
 
         $this->week_number = (int) ($this->weeks[0]['week_number'] ?? 1);
 
-        // Lane options (same logic as public check-in)
-        $letters = $league->lane_breakdown->letters();                 // [] | ['A','B'] | ['A','B','C','D']
-        $positionsPerLane = $league->lane_breakdown->positionsPerLane(); // 1,2,4
-        $opts = [];
-        for ($i = 1; $i <= (int) $league->lanes_count; $i++) {
-            if ($positionsPerLane === 1) {
-                $opts[] = (string) $i;
-            } else {
-                foreach ($letters as $L) {
-                    $opts[] = $i.$L;
-                }
-            }
-        }
-        $this->laneOptions = $opts;
-
-        // initial filtered list
+        $this->refreshParticipantsForWeek();
         $this->refreshSessions();
     }
 
-    /** Re-fetch sessions based on filter state */
+    protected function normalizeParticipants($val): array
+    {
+        if (is_array($val)) {
+            return array_values(array_unique(array_map('intval', $val)));
+        }
+        $arr = json_decode((string) $val, true) ?: [];
+
+        return array_values(array_unique(array_map('intval', $arr)));
+    }
+
+    protected function assignedParticipantIdsForWeek(): array
+    {
+        $sessions = KioskSession::query()
+            ->where('league_id', $this->league->id)
+            ->where('week_number', $this->week_number)
+            ->get(['participants']);
+
+        $ids = [];
+        foreach ($sessions as $s) {
+            $ids = array_merge($ids, $this->normalizeParticipants($s->participants));
+        }
+
+        return array_values(array_unique(array_map('intval', $ids)));
+    }
+
+    protected function refreshParticipantsForWeek(): void
+    {
+        $alreadyAssigned = $this->assignedParticipantIdsForWeek();
+
+        $checkins = LeagueCheckin::query()
+            ->where('league_id', $this->league->id)
+            ->where('week_number', $this->week_number)
+            ->when(! empty($alreadyAssigned), fn ($q) => $q->whereNotIn('participant_id', $alreadyAssigned))
+            ->orderBy('lane_number')->orderBy('lane_slot')
+            ->get(['participant_id', 'participant_name', 'lane_number', 'lane_slot']);
+
+        $this->participantsForWeek = $checkins->map(function ($c) {
+            $lane = (string) ($c->lane_number ?? '');
+            if ($lane !== '' && $c->lane_slot && $c->lane_slot !== 'single') {
+                $lane .= $c->lane_slot;
+            }
+
+            return [
+                'id' => (int) $c->participant_id,
+                'name' => (string) ($c->participant_name ?: 'Unknown'),
+                'lane' => $lane !== '' ? $lane : null,
+            ];
+        })->values()->all();
+
+        $this->participantIds = [];
+    }
+
     public function refreshSessions(): void
     {
         $base = KioskSession::where('league_id', $this->league->id)->latest();
@@ -76,10 +107,8 @@ new class extends Component
         $this->sessions = $base->get();
     }
 
-    /** When week changes via dropdown, refresh the filtered table */
     public function updatedWeekNumber(): void
     {
-        // Ensure the selected week is valid for this league
         $exists = LeagueWeek::where('league_id', $this->league->id)
             ->where('week_number', $this->week_number)->exists();
 
@@ -89,10 +118,10 @@ new class extends Component
             return;
         }
 
+        $this->refreshParticipantsForWeek();
         $this->refreshSessions();
     }
 
-    /** Toggle the all/filtered view for convenience */
     public function toggleShowAll(): void
     {
         $this->showAll = ! $this->showAll;
@@ -105,16 +134,23 @@ new class extends Component
 
         $this->validate([
             'week_number' => ['required', 'integer', 'between:1,'.$this->league->length_weeks],
-            'lanes' => ['required', 'array', 'min:1'],
-            'lanes.*' => ['string', 'max:10'],
+            'participantIds' => ['required', 'array', 'min:1'],
+            'participantIds.*' => ['integer'],
         ]);
 
-        // ensure the week exists on this league
         $exists = LeagueWeek::where('league_id', $this->league->id)
             ->where('week_number', $this->week_number)->exists();
-
         if (! $exists) {
             $this->addError('week_number', 'Selected week does not exist for this league.');
+
+            return;
+        }
+
+        // race check: ensure not already assigned
+        $dupes = array_intersect($this->assignedParticipantIdsForWeek(), array_map('intval', $this->participantIds));
+        if (! empty($dupes)) {
+            $this->addError('participantIds', 'One or more selected archers were already assigned. Please refresh.');
+            $this->refreshParticipantsForWeek();
 
             return;
         }
@@ -122,46 +158,53 @@ new class extends Component
         $session = KioskSession::create([
             'league_id' => $this->league->id,
             'week_number' => $this->week_number,
-            'lanes' => array_values($this->lanes),
+            'participants' => array_values(array_unique(array_map('intval', $this->participantIds))),
+            'lanes' => [], // legacy
             'token' => Str::random(40),
             'is_active' => true,
             'created_by' => auth()->id(),
         ]);
 
-        // refresh (respect current filter)
-        $this->lanes = [];
+        $this->participantIds = [];
         $this->createdToken = $session->token;
+
         $this->refreshSessions();
+        $this->refreshParticipantsForWeek();
 
         $this->dispatch('toast', type: 'success', message: 'Kiosk session created.');
     }
 
-    public function toggleSession(int $id): void
+    /** Delete immediately (no modal), then re-expose those archers in the picker */
+    public function deleteSession(int $id): void
     {
         Gate::authorize('update', $this->league);
 
         $s = KioskSession::where('league_id', $this->league->id)->findOrFail($id);
-        $s->is_active = ! $s->is_active;
-        $s->save();
+        $s->delete();
 
         $this->refreshSessions();
+        $this->refreshParticipantsForWeek();
+
+        // clear any flash URL banner for deleted session
+        $this->createdToken = null;
+
+        $this->dispatch('toast', type: 'success', message: 'Kiosk session deleted.');
     }
 };
 ?>
 
 <section class="w-full">
-    {{-- Header --}}
     <div class="mx-auto max-w-7xl">
+        {{-- Page header (stays at the top) --}}
         <div class="sm:flex sm:items-center">
             <div class="sm:flex-auto">
                 <h1 class="text-base font-semibold text-gray-900 dark:text-white">
                     {{ $league->title }} — Kiosk Sessions
                 </h1>
                 <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">
-                    Assign lanes to a tablet and share the tokenized URL with archers at those lanes.
+                    Assign a tablet to specific archers (checked in for the selected week) and share the tokenized URL.
                 </p>
             </div>
-
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
                 <a href="{{ route('corporate.leagues.show', $league) }}"
                    class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
@@ -171,7 +214,7 @@ new class extends Component
             </div>
         </div>
 
-        {{-- Flash reveal of the URL --}}
+        {{-- Flash URL for last created session --}}
         @if ($createdToken)
             @php($kioskUrl = url('/k/'.$createdToken))
             <div class="mt-4 rounded-xl border border-emerald-300/40 bg-emerald-50 p-4 text-emerald-900
@@ -190,11 +233,11 @@ new class extends Component
         <div class="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-white/5">
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">Create kiosk session</h2>
             <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">
-                Pick a week and one or more lanes. You’ll get a shareable tablet link.
+                Pick a week, then select one or more archers who have checked in.
             </p>
 
             <form wire:submit.prevent="createSession" class="mt-5 space-y-6">
-                {{-- Week (Flux select) --}}
+                {{-- Week --}}
                 <div>
                     <flux:label for="week_number">Week</flux:label>
                     <flux:select id="week_number" wire:model.live="week_number" class="mt-2 w-full">
@@ -207,32 +250,49 @@ new class extends Component
                     @error('week_number') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- Lane checkboxes --}}
+                {{-- Participant checkboxes (available only) --}}
                 <div>
                     <div class="flex items-center justify-between">
-                        <label class="block text-sm font-medium text-gray-800 dark:text-gray-200">Lanes</label>
+                        <label class="block text-sm font-medium text-gray-800 dark:text-gray-200">Archers checked in</label>
                         <div class="text-xs text-gray-500 dark:text-gray-400">Select one or more</div>
                     </div>
 
-                    <div class="mt-2 grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                        @foreach ($laneOptions as $laneCode)
-                            <label class="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm
-                                           dark:border-white/10 dark:bg-white/5">
-                                <input type="checkbox" wire:model="lanes" value="{{ $laneCode }}"
-                                       class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600">
-                                <span class="text-gray-800 dark:text-gray-200">Lane {{ $laneCode }}</span>
-                            </label>
-                        @endforeach
-                    </div>
-                    @error('lanes') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
-                    @error('lanes.*') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
+                    @if (count($participantsForWeek))
+                        <div class="mt-2 grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                            @foreach ($participantsForWeek as $p)
+                                <label class="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm
+                                               dark:border-white/10 dark:bg-white/5">
+                                    <input type="checkbox"
+                                           wire:model.live="participantIds"
+                                           value="{{ (int) $p['id'] }}"
+                                           class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600">
+                                    <span class="text-gray-800 dark:text-gray-200">
+                                        {{ $p['name'] }}
+                                        @if($p['lane'])
+                                            <span class="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-white/10 dark:text-gray-300">
+                                                Lane {{ $p['lane'] }}
+                                            </span>
+                                        @endif
+                                    </span>
+                                </label>
+                            @endforeach
+                        </div>
+                    @else
+                        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                            No available archers to assign for week {{ $week_number }}.
+                        </p>
+                    @endif
+
+                    @error('participantIds') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
+                    @error('participantIds.*') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
                 </div>
 
                 <div class="flex items-center gap-3">
                     <button type="submit"
                             class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs
                                    hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
-                                   dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500">
+                                   dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500"
+                            @disabled(count($participantsForWeek) === 0)>
                         Create kiosk session
                     </button>
                     <p class="text-xs text-gray-500 dark:text-gray-400">A unique tokenized URL will be generated.</p>
@@ -240,7 +300,7 @@ new class extends Component
             </form>
         </div>
 
-        {{-- Sessions table (filtered by selected week unless "Show all" is on) --}}
+        {{-- Sessions table (now placed AFTER the header + form) --}}
         <div class="mt-8">
             <div class="mb-2 flex items-center justify-between">
                 <div class="text-sm text-gray-700 dark:text-gray-300">
@@ -262,7 +322,7 @@ new class extends Component
                         <tr>
                             <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Created</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Week</th>
-                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Lanes</th>
+                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Assigned archers</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Status</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Tablet URL</th>
                             <th class="py-3.5 pl-3 pr-4 text-right"><span class="sr-only">Actions</span></th>
@@ -271,6 +331,9 @@ new class extends Component
                     <tbody class="divide-y divide-gray-100 dark:divide-white/10 bg-white dark:bg-transparent">
                         @forelse ($sessions as $s)
                             @php($url = url('/k/'.$s->token))
+                            @php($ids = is_array($s->participants) ? $s->participants : (json_decode((string)$s->participants, true) ?: []))
+                            @php($rows = \App\Models\LeagueParticipant::where('league_id', $league->id)->whereIn('id', $ids)->get(['id','first_name','last_name'])->keyBy('id'))
+                            @php($checkins = \App\Models\LeagueCheckin::where('league_id', $league->id)->where('week_number', $s->week_number)->whereIn('participant_id', $ids)->get(['participant_id','lane_number','lane_slot'])->keyBy('participant_id'))
                             <tr>
                                 <td class="py-3.5 pl-4 pr-3 text-sm text-gray-800 dark:text-gray-200">
                                     {{ $s->created_at?->format('Y-m-d H:i') ?? '—' }}
@@ -279,11 +342,22 @@ new class extends Component
                                     Week {{ $s->week_number }}
                                 </td>
                                 <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
-                                    @if (is_array($s->lanes) && count($s->lanes))
+                                    @if (!empty($ids))
                                         <div class="flex flex-wrap gap-1">
-                                            @foreach ($s->lanes as $lc)
+                                            @foreach ($ids as $pid)
+                                                @php($p = $rows->get($pid))
+                                                @php($nm = $p ? trim(($p->first_name ?? '').' '.($p->last_name ?? '')) : '#'.$pid)
+                                                @php($c = $checkins->get($pid))
+                                                @php($lane = null)
+                                                @if($c)
+                                                    @php($lane = (string) ($c->lane_number ?? ''))
+                                                    @if($lane !== '' && $c->lane_slot && $c->lane_slot !== 'single')
+                                                        @php($lane .= $c->lane_slot)
+                                                    @endif
+                                                    @php($lane = $lane !== '' ? $lane : null)
+                                                @endif
                                                 <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">
-                                                    {{ $lc }}
+                                                    {{ $nm }}@if($lane) — Lane {{ $lane }}@endif
                                                 </span>
                                             @endforeach
                                         </div>
@@ -313,14 +387,16 @@ new class extends Component
                                                 x-data="{copied:false}"
                                                 @click="navigator.clipboard.writeText('{{ $url }}'); copied=true; setTimeout(()=>copied=false,1500)"
                                                 class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                       dark:bg:white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                                                       dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
                                             <span x-show="!copied">Copy</span>
                                             <span x-show="copied">Copied!</span>
                                         </button>
-                                        <button wire:click="toggleSession({{ $s->id }})"
-                                                class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                       dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                                            {{ $s->is_active ? 'Deactivate' : 'Activate' }}
+
+                                        {{-- Delete immediately: no modal, no Alpine prevent --}}
+                                        <button wire:click="deleteSession({{ $s->id }})"
+                                                class="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-rose-600 inset-ring inset-ring-gray-300 hover:bg-rose-50
+                                                       dark:bg-white/5 dark:text-rose-300 dark:inset-ring-white/10 dark:hover:bg-rose-500/10">
+                                            Delete
                                         </button>
                                     </div>
                                 </td>
@@ -336,6 +412,5 @@ new class extends Component
                 </table>
             </div>
         </div>
-
     </div>
 </section>
