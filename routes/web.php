@@ -105,9 +105,19 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
             }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
         })->name('leagues.participants.export');
 
+        // Scoring Routes
+        Route::get('leagues/{league}/scoring-sheet',
+            [\App\Http\Controllers\LeagueScoringSheetController::class, '__invoke'])
+            ->name('leagues.scoring_sheet')
+            ->middleware(['auth']);
+
         // Kiosk Manager (private) — already in your file
         Volt::route('leagues/{league}/kiosks', 'corporate.kiosks.index')
             ->name('manager.kiosks.index');
+
+        // Live Score View
+        Route::get('leagues/{league}/weeks/{week}/live', \App\Livewire\Corporate\Leagues\LiveScoring::class)
+            ->name('leagues.weeks.live');
 
     });
 

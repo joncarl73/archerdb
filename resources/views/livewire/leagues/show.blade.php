@@ -257,32 +257,34 @@ new class extends Component
 
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
                 <div class="flex items-center gap-2">
-                    <a href="{{ route('corporate.manager.kiosks.index', $league) }}"
-                    class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                            dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                    Kiosk sessions
-                    </a>
-                    {{-- Download template --}}
-                    <a href="{{ route('corporate.leagues.participants.template', $league) }}"
-                       class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                        Download CSV template
-                    </a>
+                    {{-- Kiosk sessions --}}
+                    <flux:button as="a" href="{{ route('corporate.manager.kiosks.index', $league) }}" variant="primary" color="emerald" icon="computer-desktop">
+                        Kiosk sessions
+                    </flux:button>
+                    {{-- Actions dropdown --}}
+                    <flux:dropdown>
+                        <flux:button icon:trailing="chevron-down">Actions</flux:button>
 
-                    {{-- Export existing --}}
-                    <a href="{{ route('corporate.leagues.participants.export', $league) }}"
-                       class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                        Export participants
-                    </a>
+                        <flux:menu class="min-w-64">
+                            <flux:menu.item href="{{ route('corporate.leagues.scoring_sheet', $league) }}" icon="document-arrow-down">
+                                Download scoring sheet (PDF)
+                            </flux:menu.item>
+
+                            <flux:menu.item href="{{ route('corporate.leagues.participants.template', $league) }}" icon="table-cells">
+                                Download CSV template
+                            </flux:menu.item>
+
+                            <flux:menu.item href="{{ route('corporate.leagues.participants.export', $league) }}" icon="users">
+                                Export participants
+                            </flux:menu.item>
+                        </flux:menu>
+                    </flux:dropdown>
 
                     {{-- Upload CSV --}}
-                    <button wire:click="openCsv"
-                            class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs
-                                   hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
-                                   dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500">
+        
+                    <flux:button wire:click="openCsv" variant="primary" color="indigo" icon="arrow-up-tray">
                         Upload CSV
-                    </button>
+                    </flux:button>
                 </div>
             </div>
         </div>
@@ -351,7 +353,16 @@ new class extends Component
                                     {{ $this->checkinsByWeek[$w->week_number] ?? 0 }}
                                 </td>
                                 <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
-                                    <span class="text-xs opacity-60">—</span>
+                                    <flux:button
+                                    as="a"
+                                    href="{{ route('corporate.leagues.weeks.live', [$league, $w]) }}?kiosk=1"
+                                    target="_blank"
+                                    size="sm"
+                                    variant="ghost"
+                                    icon="presentation-chart-bar"
+                                    >
+                                    Live scoring (Kiosk)
+                                    </flux:button>
                                 </td>
                             </tr>
                         @empty
