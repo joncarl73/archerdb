@@ -28,15 +28,19 @@ class Record extends Component
 
     public string $scoringSystem = '10'; // for showing "X" label
 
-    // kiosk context (passed from controller/blade)
+    // kiosk context (passed from controller/blade or session)
     public bool $kioskMode = false;
 
     public ?string $kioskReturnTo = null;
 
     /**
-     * Accept kiosk props so Blade like
-     * <livewire:public.scoring.record :kioskMode="$kioskMode" :kioskReturnTo="$kioskReturnTo" ... />
-     * actually reaches the component before our guard.
+     * Props arrive via kebab-case in Blade:
+     * <livewire:public.scoring.record
+     *   :uuid="$uuid"
+     *   :score="$score"
+     *   :kiosk-mode="$kioskMode ?? false"
+     *   :kiosk-return-to="$kioskReturnTo ?? null"
+     * />
      */
     public function mount(
         string $uuid,
@@ -47,19 +51,14 @@ class Record extends Component
         $this->uuid = $uuid;
         $this->league = League::where('public_uuid', $uuid)->firstOrFail();
 
-        // assign kiosk props if provided
-        if (! is_null($kioskMode)) {
-            $this->kioskMode = (bool) $kioskMode;
-        }
-        if (! is_null($kioskReturnTo)) {
-            $this->kioskReturnTo = $kioskReturnTo;
-        }
+        // Prefer explicit props; otherwise fall back to session flags set by kiosk handoff
+        $this->kioskMode = ! is_null($kioskMode) ? (bool) $kioskMode : (bool) session('kiosk_mode', false);
+        $this->kioskReturnTo = $kioskReturnTo ?? session('kiosk_return_to');
 
         // Guard: allow if kiosk handoff OR league mode is personal_device/kiosk/tablet
         $mode = $this->league->scoring_mode->value ?? $this->league->scoring_mode;
         $allowed = $this->kioskMode || in_array((string) $mode, ['personal_device', 'kiosk', 'tablet'], true);
 
-        // (Optional) breadcrumb to confirm what we saw during mount
         Log::debug('lw:record.mount', [
             'uuid' => $uuid,
             'league_id' => $this->league->id,
@@ -71,8 +70,6 @@ class Record extends Component
         ]);
 
         abort_unless($allowed, 404, 'LW-G1');
-
-        // Ensure the score belongs to this league
         abort_unless($score->league_id === $this->league->id, 404);
 
         $this->score = $score->load(['ends' => fn ($q) => $q->orderBy('end_number')]);

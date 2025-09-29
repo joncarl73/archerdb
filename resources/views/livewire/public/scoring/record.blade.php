@@ -13,11 +13,12 @@
         </p>
       </div>
       <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-        {{-- If you already have $league available, prefer $league->public_uuid below --}}
-        <flux:button as="a" variant="primary"
-          href="{{ route('public.scoring.summary', [$league->public_uuid, $score->id]) }}">
-          End scoring
-        </flux:button>
+        @unless($kioskMode)
+          <flux:button as="a" variant="primary"
+            href="{{ route('public.scoring.summary', [$league->public_uuid, $score->id]) }}">
+            End scoring
+          </flux:button>
+        @endunless
       </div>
     </div>
   </div>
