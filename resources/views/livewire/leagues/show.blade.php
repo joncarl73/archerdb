@@ -273,6 +273,14 @@ new class extends Component
                         <flux:button icon:trailing="chevron-down">Actions</flux:button>
 
                         <flux:menu class="min-w-64">
+                            <flux:menu.item href="{{ route('corporate.leagues.info.edit', $league) }}" icon="pencil-square">
+                                Create/Update league info
+                            </flux:menu.item>
+
+                            <flux:menu.item href="{{ route('public.league.info', ['uuid' => $league->public_uuid]) }}" target="_blank" icon="arrow-top-right-on-square">
+                                View public page
+                            </flux:menu.item>
+                            
                             <flux:menu.item href="{{ route('corporate.leagues.scoring_sheet', $league) }}" icon="document-arrow-down">
                                 Download scoring sheet (PDF)
                             </flux:menu.item>

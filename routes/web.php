@@ -2,6 +2,7 @@
 
 // ← NEW
 use App\Http\Controllers\PublicCheckinController;
+use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
 use App\Models\League;
 use Illuminate\Support\Facades\Gate;
@@ -67,6 +68,9 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         Volt::route('leagues/{league}', 'leagues.show')
             ->name('leagues.show')
             ->whereNumber('league'); // uses route model binding for League
+        Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
+            ->name('leagues.info.edit')
+            ->whereNumber('league');
 
         // CSV template download
         Route::get('leagues/{league}/participants/template.csv', function (League $league) {
@@ -153,6 +157,9 @@ Route::prefix('l/{uuid}')->group(function () {
     Route::get('/scoring/{score}/summary', [PublicScoringController::class, 'summary'])
         ->whereNumber('score') // ← added for consistency
         ->name('public.scoring.summary');
+
+    Route::get('/info', [PublicLeagueInfoController::class, 'show'])
+        ->name('public.league.info');
 });
 
 /**
