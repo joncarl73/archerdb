@@ -79,7 +79,6 @@
 
           @if (count($sortedRows) === 0)
             <div class="px-4 py-6 text-center text-zinc-600 dark:text-zinc-300">
-              No check-ins yet.
             </div>
           @else
             <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -97,10 +96,10 @@
                         <div class="text-right pr-1 hidden sm:block">
                           {{ $r['lane'] ?? '—' }}<span class="opacity-60">{{ !empty($r['slot']) ? ' · '.$r['slot'] : '' }}</span>
                         </div>
-                        <div class="text-right pr-1 tabular-nums">X&nbsp;{{ $r['x'] }}</div>
-                        <div class="text-right pr-1 tabular-nums">10&nbsp;{{ $r['tens'] }}</div>
-                        <div class="text-right pr-1 tabular-nums">9&nbsp;{{ $r['nines'] }}</div>
-                        <div class="text-right font-semibold tabular-nums">{{ $r['score'] }}</div>
+                        <div class="text-right pr-1 tabular-nums">Xs&nbsp;/&nbsp;{{ $r['x'] }}</div>
+                        <div class="text-right pr-1 tabular-nums">10s&nbsp;/&nbsp;{{ $r['tens'] }}</div>
+                        <div class="text-right pr-1 tabular-nums">9s&nbsp;/&nbsp;{{ $r['nines'] }}</div>
+                        <div class="text-right font-semibold tabular-nums">Total:&nbsp;{{ $r['score'] }}</div>
                       </div>
                     </div>
                   @endforeach
