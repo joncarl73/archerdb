@@ -4,58 +4,96 @@ namespace App\Livewire\Public\Scoring;
 
 use App\Models\League;
 use App\Models\LeagueWeekScore;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\View\View;
 use Livewire\Component;
 
 class Record extends Component
 {
-    public string $uuid;                 // league public uuid (route param)
+    public string $uuid;
 
-    public League $league;               // resolved in mount()
+    public League $league;
 
-    public LeagueWeekScore $score;       // bound via :score="$score"
+    public LeagueWeekScore $score;
 
-    // UI state
     public bool $showKeypad = false;
 
-    public int $selectedEnd = 1;         // 1-based
+    public int $selectedEnd = 1;
 
-    public int $selectedArrow = 0;       // 0-based
+    public int $selectedArrow = 0;
 
-    // display helpers
-    public int $maxScore = 10;           // usually 10
+    public int $maxScore = 10;
 
-    public string $scoringSystem = '10'; // for showing "X" label
+    public string $scoringSystem = '10';
 
-    // kiosk context (passed from controller/blade or session)
+    // Kiosk flags (normalized so personal_device NEVER uses kiosk)
     public bool $kioskMode = false;
 
     public ?string $kioskReturnTo = null;
 
-    /**
-     * Props arrive via kebab-case in Blade:
-     * <livewire:public.scoring.record
-     *   :uuid="$uuid"
-     *   :score="$score"
-     *   :kiosk-mode="$kioskMode ?? false"
-     *   :kiosk-return-to="$kioskReturnTo ?? null"
-     * />
-     */
-    public function mount(
-        string $uuid,
-        LeagueWeekScore $score,
-        ?bool $kioskMode = null,
-        ?string $kioskReturnTo = null
-    ): void {
+    /** Is the score’s week date equal to “today” in app TZ? */
+    private function isScoresWeekToday(League $league, LeagueWeekScore $score): bool
+    {
+        $tz = config('app.timezone');
+        $today = Carbon::now($tz)->toDateString();
+
+        $score->loadMissing('week');
+        $weekDate = optional($score->week)->date;
+
+        if (! $weekDate) {
+            return false;
+        }
+
+        return Carbon::parse($weekDate, $tz)->toDateString() === $today;
+    }
+
+    /** Is today the league’s configured day_of_week? */
+    private function isLeagueNight(League $league): bool
+    {
+        return (int) Carbon::now(config('app.timezone'))->dayOfWeek === (int) $league->day_of_week;
+    }
+
+    /** Single gate used anywhere we need to decide kiosk behavior */
+    protected function shouldShowKioskControls(): bool
+    {
+        $isTabletMode = ($this->league->scoring_mode === 'tablet');
+        $isLeagueNight = $this->isLeagueNight($this->league);
+        $isWeekIsToday = $this->isScoresWeekToday($this->league, $this->score);
+
+        return $isTabletMode
+            && $isLeagueNight
+            && $isWeekIsToday
+            && $this->kioskMode === true
+            && ! empty($this->kioskReturnTo);
+    }
+
+    public function mount(string $uuid, LeagueWeekScore $score): void
+    {
         $this->uuid = $uuid;
         $this->league = League::where('public_uuid', $uuid)->firstOrFail();
 
-        // Prefer explicit props; otherwise fall back to session flags set by kiosk handoff
-        $this->kioskMode = ! is_null($kioskMode) ? (bool) $kioskMode : (bool) session('kiosk_mode', false);
-        $this->kioskReturnTo = $kioskReturnTo ?? session('kiosk_return_to');
+        // --- KIOSK NORMALIZATION ---
+        // Only honor kiosk session flags if league is TABLET mode AND it’s the correct night/date.
+        $isTabletMode = ($this->league->scoring_mode === 'tablet');
+        $isLeagueNight = $this->isLeagueNight($this->league);
+        $isToday = $this->isScoresWeekToday($this->league, $score);
 
-        // Guard: allow if kiosk handoff OR league mode is personal_device/kiosk/tablet
+        $sessionKiosk = (bool) session('kiosk_mode', false);
+        $returnTo = (string) session('kiosk_return_to', '');
+
+        if ($isTabletMode && $isLeagueNight && $isToday && $sessionKiosk && $returnTo !== '') {
+            $this->kioskMode = true;
+            $this->kioskReturnTo = $returnTo;
+        } else {
+            // Force-disable kiosk in all other cases
+            $this->kioskMode = false;
+            $this->kioskReturnTo = null;
+            session()->forget('kiosk_mode');
+            session()->forget('kiosk_return_to');
+        }
+        // --------------------------------
+
         $mode = $this->league->scoring_mode->value ?? $this->league->scoring_mode;
         $allowed = $this->kioskMode || in_array((string) $mode, ['personal_device', 'kiosk', 'tablet'], true);
 
@@ -72,7 +110,10 @@ class Record extends Component
         abort_unless($allowed, 404, 'LW-G1');
         abort_unless($score->league_id === $this->league->id, 404);
 
-        $this->score = $score->load(['ends' => fn ($q) => $q->orderBy('end_number')]);
+        $this->score = $score->load([
+            'ends' => fn ($q) => $q->orderBy('end_number'),
+            'week',
+        ]);
 
         $this->maxScore = (int) ($this->score->max_score ?? 10);
         $this->scoringSystem = $this->maxScore === 10 ? '10' : (string) $this->maxScore;
@@ -122,6 +163,7 @@ class Record extends Component
         if ($key === 'X') {
             return (int) ($this->score->x_value ?? 10);
         }
+
         $maxAllowed = max($this->maxScore, (int) ($this->score->x_value ?? 10));
 
         return max(0, min($maxAllowed, (int) $key));
@@ -148,8 +190,7 @@ class Record extends Component
         }
 
         $scores = $end->scores ?? array_fill(0, (int) $this->score->arrows_per_end, null);
-        $val = $this->mapKeyToPoints($key);
-        $scores[$this->selectedArrow] = $val;
+        $scores[$this->selectedArrow] = $this->mapKeyToPoints($key);
         $end->fillScoresAndSave($scores);
 
         if ($this->selectedArrow < $this->score->arrows_per_end - 1) {
@@ -159,17 +200,22 @@ class Record extends Component
         $this->score->refresh()->load('ends');
     }
 
-    public function done(): void
+    public function finalizeEnd(): void
     {
-        if ($this->kioskMode && $this->kioskReturnTo) {
-            // Livewire 3: client-side navigate so tablet returns to list
+        // If kiosk is truly active (tablet + league night + today + flags), go back to kiosk board.
+        if ($this->shouldShowKioskControls()) {
             $this->redirect($this->kioskReturnTo, navigate: true);
 
             return;
         }
 
-        // Personal device flow: close keypad and stay on grid
+        // Personal-device flow: do NOT go to kiosk — just close keypad (remain on scoring grid page).
         $this->closeKeypad();
+    }
+
+    public function done(): void
+    {
+        $this->finalizeEnd();
     }
 
     public function render(): View

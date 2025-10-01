@@ -1,3 +1,12 @@
+@php
+  // Gate kiosk UI strictly by league settings + timing.
+  $isLeagueNight     = (int)\Carbon\Carbon::now(config('app.timezone'))->dayOfWeek === (int)$league->day_of_week;
+  $isTabletMode      = ($league->scoring_mode === 'tablet');
+
+  // Final flag: show kiosk-only controls (e.g., "Back to kiosk") iff ALL are true.
+  $showKioskControls = $isTabletMode && $isLeagueNight && !empty($kioskMode) && !empty($kioskReturnTo);
+@endphp
+
 <section class="w-full mb-5">
   {{-- Header --}}
   <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -12,13 +21,21 @@
           @endif
         </p>
       </div>
+
       <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-        @unless($kioskMode)
+        @if($showKioskControls)
+          {{-- Tablet mode + league night + kiosk context => go back to lane board --}}
+          <flux:button as="a" variant="primary" href="{{ $kioskReturnTo }}">
+            Back to kiosk
+          </flux:button>
+        @else
+          {{-- Personal-device flow: finish this score and go to summary (or your scoring grid if different) --}}
           <flux:button as="a" variant="primary"
             href="{{ route('public.scoring.summary', [$league->public_uuid, $score->id]) }}">
+            {{-- If your "scoring grid" is a different route, replace the route() above. --}}
             End scoring
           </flux:button>
-        @endunless
+        @endif
       </div>
     </div>
   </div>
@@ -140,7 +157,8 @@
 
             <div class="mt-5 flex items-center gap-3">
               <flux:button variant="ghost" size="sm" class="px-4 py-2" wire:click="clearCurrent">Clear</flux:button>
-              <flux:button variant="primary" size="sm" class="px-4 py-2" wire:click="done">Done</flux:button>
+              {{-- IMPORTANT: finalizeEnd should redirect using the SAME kiosk gating logic server-side --}}
+              <flux:button variant="primary" size="sm" class="px-4 py-2" wire:click="finalizeEnd">Done</flux:button>
             </div>
           </div>
 
@@ -155,7 +173,7 @@
                   <button
                     type="button"
                     wire:click="startEntry({{ $selectedEnd }}, {{ $i }})"
-                    class="inline-flex h-12 w-12 sm:h-9 sm:w-9 items-center justify-center rounded-md inset-ring inset-ring-zinc-200 dark:inset-ring-white/10 hover:bg-zinc-50 dark:hover:bg-white/5
+                    class="inline-flex h-12 w-12 sm:h-9 sm:w-9 items-center justify-center rounded-md inset-ring inset-ring-zinc-200 dark:inset-ring-white/10 hover:bg-zinc-50 dark:hover:bg:white/5
                            @if($selectedArrow === $i) ring-2 ring-indigo-500 @endif"
                     aria-pressed="{{ $selectedArrow === $i ? 'true' : 'false' }}"
                     aria-label="Select arrow {{ $i + 1 }}"

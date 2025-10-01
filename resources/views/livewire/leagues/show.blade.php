@@ -240,6 +240,11 @@ new class extends Component
 ?>
 
 <section class="w-full">
+    @php
+        // Hide kiosk buttons unless league is tablet mode.
+        $mode = $league->scoring_mode->value ?? $league->scoring_mode;
+        $isTabletMode = ($mode === 'tablet');
+    @endphp
     {{-- Header --}}
     <div class="mx-auto max-w-7xl">
         <div class="sm:flex sm:items-center">
@@ -258,9 +263,11 @@ new class extends Component
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
                 <div class="flex items-center gap-2">
                     {{-- Kiosk sessions --}}
-                    <flux:button as="a" href="{{ route('corporate.manager.kiosks.index', $league) }}" variant="primary" color="emerald" icon="computer-desktop">
-                        Kiosk sessions
-                    </flux:button>
+                    @if($isTabletMode)
+                        <flux:button as="a" href="{{ route('corporate.manager.kiosks.index', $league) }}" variant="primary" color="emerald" icon="computer-desktop">
+                            Kiosk sessions
+                        </flux:button>
+                    @endif
                     {{-- Actions dropdown --}}
                     <flux:dropdown>
                         <flux:button icon:trailing="chevron-down">Actions</flux:button>
@@ -358,7 +365,8 @@ new class extends Component
                                     href="{{ route('corporate.leagues.weeks.live', [$league, $w]) }}?kiosk=1"
                                     target="_blank"
                                     size="sm"
-                                    variant="ghost"
+                                    variant="primary"
+                                    color="blue"
                                     icon="presentation-chart-bar"
                                     >
                                     Live scoring (Kiosk)

@@ -1,37 +1,57 @@
 <?php
 
-// app/Http/Controllers/KioskPublicController.php
-
 namespace App\Http\Controllers;
 
 use App\Models\KioskSession;
+use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueParticipant;
 use App\Models\LeagueWeek;
 use App\Models\LeagueWeekScore;
+use Carbon\Carbon;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\View\View;
 
 class KioskPublicController extends Controller
 {
-    public function landing(string $token)
+    /**
+     * Is the given league week the one scheduled for "today"?
+     * Uses app timezone; swap for $league->timezone if you store one.
+     */
+    private function isTodayWeek(League $league, LeagueWeek $week): bool
+    {
+        $tz = config('app.timezone');
+        $today = Carbon::now($tz)->toDateString();
+        $weekDate = Carbon::parse($week->date, $tz)->toDateString();
+
+        return $weekDate === $today;
+    }
+
+    /**
+     * /k/{token} — lane board / landing
+     */
+    public function landing(string $token): RedirectResponse|View
     {
         $session = KioskSession::where('token', $token)
             ->where('is_active', true)
-            ->firstOrFail();
+            ->first();
+
+        if (! $session) {
+            return redirect()->route('home')
+                ->with('toast', ['type' => 'warning', 'message' => 'That kiosk session has ended.']);
+        }
 
         $league = $session->league;
 
-        // Exact LeagueWeek row for the session's week_number
         $week = LeagueWeek::where('league_id', $league->id)
             ->where('week_number', $session->week_number)
             ->firstOrFail();
 
-        // Normalize participants array (handle raw JSON string or null)
         $participantIds = is_array($session->participants)
             ? $session->participants
             : (json_decode((string) $session->participants, true) ?: []);
         $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
 
-        // Only assigned + checked-in archers for this week
         $checkins = LeagueCheckin::with('participant')
             ->where('league_id', $league->id)
             ->where('week_number', $session->week_number)
@@ -40,7 +60,6 @@ class KioskPublicController extends Controller
             ->orderBy('lane_slot')
             ->get();
 
-        // Optional: names for header chips
         $assignedNames = [];
         if (count($participantIds)) {
             $assignedNames = LeagueParticipant::where('league_id', $league->id)
@@ -52,34 +71,37 @@ class KioskPublicController extends Controller
                 ->all();
         }
 
-        return view('public.kiosk.landing', [
-            'session' => $session,
-            'league' => $league,
-            'week' => $week,
-            'checkins' => $checkins,
-            'assignedNames' => $assignedNames, // optional chips in header
-        ]);
+        return view('public.kiosk.landing', compact('session', 'league', 'week', 'checkins', 'assignedNames'));
     }
 
-    // Handoff to scoring (creates/loads LeagueWeekScore then jumps to record in kiosk mode)
-    // app/Http/Controllers/KioskPublicController.php
-
-    public function score(string $token, int $checkinId)
+    /**
+     * /k/{token}/score/{checkin}
+     * - Enable kiosk mode ONLY if:
+     *   (a) kiosk session is valid,
+     *   (b) the check-in’s week == kiosk session week,
+     *   (c) that kiosk session week is TODAY.
+     * - Otherwise, clear kiosk flags and behave like personal scoring.
+     */
+    public function score(string $token, int $checkinId): RedirectResponse
     {
-        $session = KioskSession::where('token', $token)->where('is_active', true)->firstOrFail();
-        $league = $session->league;
+        $session = KioskSession::where('token', $token)
+            ->where('is_active', true)
+            ->first();
 
-        $checkin = \App\Models\LeagueCheckin::with('participant')->findOrFail($checkinId);
-        abort_unless($checkin->league_id === $league->id, 404);
-        abort_unless($checkin->week_number === $session->week_number, 404);
+        // Load the check-in (needed in both paths)
+        $checkin = LeagueCheckin::with('participant')->findOrFail($checkinId);
+        $league = League::findOrFail($checkin->league_id);
 
-        $week = \App\Models\LeagueWeek::where('league_id', $league->id)
-            ->where('week_number', $session->week_number)->firstOrFail();
+        // The week the archer is scoring FOR (could be makeup week)
+        $checkinWeek = LeagueWeek::where('league_id', $league->id)
+            ->where('week_number', $checkin->week_number)
+            ->firstOrFail();
 
-        $score = \App\Models\LeagueWeekScore::firstOrCreate(
+        // Create/load score for THAT (possibly past) week
+        $score = LeagueWeekScore::firstOrCreate(
             [
                 'league_id' => $league->id,
-                'league_week_id' => $week->id,
+                'league_week_id' => $checkinWeek->id,
                 'league_participant_id' => $checkin->participant_id,
             ],
             [
@@ -90,12 +112,26 @@ class KioskPublicController extends Controller
             ]
         );
 
-        // Seed ends if needed (unchanged) …
+        // Decide kiosk vs personal
+        $allowKiosk = false;
+        if ($session && $session->league_id === $league->id) {
+            $sessionWeek = LeagueWeek::where('league_id', $league->id)
+                ->where('week_number', $session->week_number)
+                ->first();
 
-        // Persist kiosk flags so refresh doesn't drop kiosk mode
-        $returnTo = route('kiosk.landing', $token);
-        session()->put('kiosk_mode', true);
-        session()->put('kiosk_return_to', $returnTo);
+            // Kiosk only if scoring the SAME week as the kiosk session AND that week is today.
+            if ($sessionWeek && $checkinWeek->id === $sessionWeek->id && $this->isTodayWeek($league, $sessionWeek)) {
+                $allowKiosk = true;
+            }
+        }
+
+        if ($allowKiosk) {
+            session()->put('kiosk_mode', true);
+            session()->put('kiosk_return_to', route('kiosk.landing', ['token' => $token]));
+        } else {
+            session()->forget('kiosk_mode');
+            session()->forget('kiosk_return_to');
+        }
 
         return redirect()->route('public.scoring.record', [$league->public_uuid, $score->id]);
     }

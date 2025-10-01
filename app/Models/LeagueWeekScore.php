@@ -47,4 +47,44 @@ class LeagueWeekScore extends Model
         }
         $this->forceFill(['total_score' => $ts, 'x_count' => $xs])->save();
     }
+
+    // app/Models/LeagueWeekScore.php
+    public function toLiveRow(): array
+    {
+        $name = trim(($this->participant->first_name ?? '').' '.($this->participant->last_name ?? ''));
+        // If you already compute 10s/9s elsewhere, keep that logic.
+        // Otherwise derive them from ends:
+        $tens = 0;
+        $nines = 0;
+        foreach ($this->ends as $end) {
+            foreach ((array) $end->scores as $v) {
+                if ($v === null) {
+                    continue;
+                }
+                if ((int) $v === 10 && (int) $this->x_value !== 10) {
+                    $tens++;
+                }
+                if ((int) $v === 9) {
+                    $nines++;
+                }
+            }
+        }
+
+        // Lane/slot from check-in (optional)
+        $checkin = \App\Models\LeagueCheckin::where('league_id', $this->league_id)
+            ->where('week_number', $this->week->week_number)
+            ->where('participant_id', $this->league_participant_id)
+            ->first();
+
+        return [
+            'id' => $this->id,
+            'name' => $name,
+            'lane' => $checkin?->lane_number,
+            'slot' => $checkin?->lane_slot,
+            'x' => (int) $this->x_count,
+            'tens' => (int) $tens,
+            'nines' => (int) $nines,
+            'score' => (int) $this->total_score,
+        ];
+    }
 }

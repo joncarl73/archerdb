@@ -4,6 +4,12 @@ namespace App\Providers;
 
 use App\Enums\UserRole;
 use App\Models\League;
+use App\Models\LeagueCheckin;
+use App\Models\LeagueWeekEnd;
+use App\Models\LeagueWeekScore;
+use App\Observers\LeagueCheckinObserver;
+use App\Observers\LeagueWeekEndObserver;
+use App\Observers\LeagueWeekScoreObserver;
 use App\Policies\LeaguePolicy;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
@@ -41,5 +47,10 @@ class AppServiceProvider extends ServiceProvider
 
         // Policy mapping for League
         Gate::policy(League::class, LeaguePolicy::class);
+
+        // Observers
+        LeagueWeekEnd::observe(LeagueWeekEndObserver::class);
+        LeagueCheckin::observe(LeagueCheckinObserver::class);
+        LeagueWeekScore::observe(LeagueWeekScoreObserver::class);
     }
 }
