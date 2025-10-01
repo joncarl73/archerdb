@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
 
 Route::get('/', function () {
-    return view('welcome');
+    return view('landing.index');
 })->name('home');
 
 Route::view('dashboard', 'dashboard')
