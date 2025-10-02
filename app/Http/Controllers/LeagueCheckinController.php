@@ -2,9 +2,8 @@
 
 // app/Http/Controllers/Corporate/LeagueCheckinController.php
 
-namespace App\Http\Controllers\Corporate;
+namespace App\Http\Controllers;
 
-use App\Http\Controllers\Controller;
 use App\Models\League;
 use Illuminate\Support\Facades\Gate;
 

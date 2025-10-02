@@ -27,6 +27,31 @@ new class extends Component
 
     public bool $showAll = false;
 
+    // QOL: collapse create panel
+    public bool $createOpen = true;
+
+    public function toggleCreateOpen(): void
+    {
+        $this->createOpen = ! $this->createOpen;
+    }
+
+    // Server-rendered QR modal
+    public bool $showQr = false;
+
+    public ?string $qrUrl = null;
+
+    public function openQr(string $token): void
+    {
+        $this->qrUrl = url('/k/'.$token);
+        $this->showQr = true;
+    }
+
+    public function closeQr(): void
+    {
+        $this->showQr = false;
+        $this->qrUrl = null;
+    }
+
     public function mount(League $league): void
     {
         Gate::authorize('update', $league);
@@ -219,88 +244,130 @@ new class extends Component
             @php($kioskUrl = url('/k/'.$createdToken))
             <div class="mt-4 rounded-xl border border-emerald-300/40 bg-emerald-50 p-4 text-emerald-900
                         dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
-                <div class="font-medium">Kiosk session created</div>
-                <div class="mt-1 text-sm">
-                    Tablet URL:
-                    <a class="underline hover:no-underline" href="{{ $kioskUrl }}" target="_blank" rel="noopener">
-                        {{ $kioskUrl }}
-                    </a>
+                <div class="flex items-center justify-between gap-3">
+                    <div>
+                        <div class="font-medium">Kiosk session created</div>
+                        <div class="mt-1 text-sm">
+                            Tablet URL:
+                            <a class="underline hover:no-underline" href="{{ $kioskUrl }}" target="_blank" rel="noopener">
+                                {{ $kioskUrl }}
+                            </a>
+                        </div>
+                    </div>
+                    <div class="shrink-0">
+                        <button
+                            type="button"
+                            wire:click="openQr('{{ $createdToken }}')"
+                            class="inline-flex items-center rounded-md bg-white px-2.5 py-1.5 text-xs font-medium text-emerald-700 inset-ring inset-ring-emerald-300/60 hover:bg-emerald-100
+                                   dark:bg-white/5 dark:text-emerald-200 dark:inset-ring-emerald-500/30 dark:hover:bg-emerald-500/20">
+                            Show QR
+                        </button>
+                    </div>
                 </div>
             </div>
         @endif
 
-        {{-- Create session --}}
-        <div class="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-white/5">
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">Create kiosk session</h2>
-            <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">
-                Pick a week, then select one or more archers who have checked in.
-            </p>
-
-            <form wire:submit.prevent="createSession" class="mt-5 space-y-6">
-                {{-- Week --}}
+        {{-- Create session (collapsible) --}}
+        <div
+            x-data="{ open: @entangle('createOpen') }"
+            class="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-white/5"
+        >
+            <div class="flex items-start justify-between p-6">
                 <div>
-                    <flux:label for="week_number">Week</flux:label>
-                    <flux:select id="week_number" wire:model.live="week_number" class="mt-2 w-full">
-                        @foreach ($weeks as $w)
-                            <option value="{{ $w['week_number'] }}">
-                                Week {{ $w['week_number'] }} — {{ \Illuminate\Support\Carbon::parse($w['date'])->toFormattedDateString() }}
-                            </option>
-                        @endforeach
-                    </flux:select>
-                    @error('week_number') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
+                    <h2 class="text-base font-semibold text-gray-900 dark:text-white">Create kiosk session</h2>
+                    <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                        Pick a week, then select one or more archers who have checked in.
+                    </p>
                 </div>
 
-                {{-- Participant checkboxes (available only) --}}
-                <div>
-                    <div class="flex items-center justify-between">
-                        <label class="block text-sm font-medium text-gray-800 dark:text-gray-200">Archers checked in</label>
-                        <div class="text-xs text-gray-500 dark:text-gray-400">Select one or more</div>
+                <button
+                    type="button"
+                    x-on:click="$wire.toggleCreateOpen()"
+                    class="ml-4 inline-flex items-center gap-1 rounded-md bg-white px-2.5 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                           dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10"
+                    aria-controls="create-kiosk-panel"
+                    x-bind:aria-expanded="open ? 'true' : 'false'"
+                >
+                    <span x-show="open">Hide</span>
+                    <span x-show="!open">Show</span>
+                    <svg x-show="open" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 15l6-6 6 6"/></svg>
+                    <svg x-show="!open" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18 9l-6 6-6-6"/></svg>
+                </button>
+            </div>
+
+            <div
+                id="create-kiosk-panel"
+                x-show="open"
+                x-collapse
+                x-cloak
+                class="border-t border-gray-200 p-6 dark:border-white/10"
+            >
+                <form wire:submit.prevent="createSession" class="space-y-6">
+                    {{-- Week --}}
+                    <div>
+                        <flux:label for="week_number">Week</flux:label>
+                        <flux:select id="week_number" wire:model.live="week_number" class="mt-2 w-full">
+                            @foreach ($weeks as $w)
+                                <option value="{{ $w['week_number'] }}">
+                                    Week {{ $w['week_number'] }} — {{ \Illuminate\Support\Carbon::parse($w['date'])->toFormattedDateString() }}
+                                </option>
+                            @endforeach
+                        </flux:select>
+                        @error('week_number') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
                     </div>
 
-                    @if (count($participantsForWeek))
-                        <div class="mt-2 grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                            @foreach ($participantsForWeek as $p)
-                                <label class="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm
-                                               dark:border-white/10 dark:bg-white/5">
-                                    <input type="checkbox"
-                                           wire:model.live="participantIds"
-                                           value="{{ (int) $p['id'] }}"
-                                           class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600">
-                                    <span class="text-gray-800 dark:text-gray-200">
-                                        {{ $p['name'] }}
-                                        @if($p['lane'])
-                                            <span class="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-white/10 dark:text-gray-300">
-                                                Lane {{ $p['lane'] }}
-                                            </span>
-                                        @endif
-                                    </span>
-                                </label>
-                            @endforeach
+                    {{-- Participant checkboxes (available only) --}}
+                    <div>
+                        <div class="flex items-center justify-between">
+                            <label class="block text-sm font-medium text-gray-800 dark:text-gray-200">Archers checked in</label>
+                            <div class="text-xs text-gray-500 dark:text-gray-400">Select one or more</div>
                         </div>
-                    @else
-                        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                            No available archers to assign for week {{ $week_number }}.
-                        </p>
-                    @endif
 
-                    @error('participantIds') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
-                    @error('participantIds.*') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
-                </div>
+                        @if (count($participantsForWeek))
+                            <div class="mt-2 grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                                @foreach ($participantsForWeek as $p)
+                                    <label class="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 text-sm
+                                                   dark:border-white/10 dark:bg-white/5">
+                                        <input type="checkbox"
+                                               wire:model.live="participantIds"
+                                               value="{{ (int) $p['id'] }}"
+                                               class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 dark:border-gray-600">
+                                        <span class="text-gray-800 dark:text-gray-200">
+                                            {{ $p['name'] }}
+                                            @if($p['lane'])
+                                                <span class="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700 dark:bg-white/10 dark:text-gray-300">
+                                                    Lane {{ $p['lane'] }}
+                                                </span>
+                                            @endif
+                                        </span>
+                                    </label>
+                                @endforeach
+                            </div>
+                        @else
+                            <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                                No available archers to assign for week {{ $week_number }}.
+                            </p>
+                        @endif
 
-                <div class="flex items-center gap-3">
-                    <button type="submit"
-                            class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs
-                                   hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
-                                   dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500"
-                            @disabled(count($participantsForWeek) === 0)>
-                        Create kiosk session
-                    </button>
-                    <p class="text-xs text-gray-500 dark:text-gray-400">A unique tokenized URL will be generated.</p>
-                </div>
-            </form>
+                        @error('participantIds') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
+                        @error('participantIds.*') <p class="mt-1 text-sm text-rose-600">{{ $message }}</p> @enderror
+                    </div>
+
+                    <div class="flex items-center gap-3">
+                        <button type="submit"
+                                class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-xs
+                                       hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
+                                       dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500"
+                                @disabled(count($participantsForWeek) === 0)>
+                            Create kiosk session
+                        </button>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">A unique tokenized URL will be generated.</p>
+                    </div>
+                </form>
+            </div>
         </div>
 
-        {{-- Sessions table (now placed AFTER the header + form) --}}
+        {{-- Sessions table --}}
         <div class="mt-8">
             <div class="mb-2 flex items-center justify-between">
                 <div class="text-sm text-gray-700 dark:text-gray-300">
@@ -383,6 +450,7 @@ new class extends Component
                                            class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
                                             Open
                                         </a>
+
                                         <button type="button"
                                                 x-data="{copied:false}"
                                                 @click="navigator.clipboard.writeText('{{ $url }}'); copied=true; setTimeout(()=>copied=false,1500)"
@@ -392,7 +460,18 @@ new class extends Component
                                             <span x-show="copied">Copied!</span>
                                         </button>
 
-                                        {{-- Delete immediately: no modal, no Alpine prevent --}}
+                                        {{-- NEW: QR button (opens Livewire-driven modal) --}}
+                                        <button
+                                            type="button"
+                                            wire:click="openQr('{{ $s->token }}')"
+                                            class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                                                   dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10"
+                                            title="Show QR"
+                                        >
+                                            QR
+                                        </button>
+
+                                        {{-- Delete immediately: no modal --}}
                                         <button wire:click="deleteSession({{ $s->id }})"
                                                 class="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-rose-600 inset-ring inset-ring-gray-300 hover:bg-rose-50
                                                        dark:bg-white/5 dark:text-rose-300 dark:inset-ring-white/10 dark:hover:bg-rose-500/10">
@@ -413,4 +492,42 @@ new class extends Component
             </div>
         </div>
     </div>
+
+    {{-- Livewire-driven QR Modal (server-rendered SVG via QrCode) --}}
+    @if ($showQr && $qrUrl)
+        <div
+            x-data
+            x-init="$nextTick(() => { document.body.classList.add('overflow-hidden') })"
+            x-on:keydown.escape.window="$wire.closeQr()"
+            class="fixed inset-0 z-50 flex items-center justify-center p-4"
+            aria-modal="true"
+        >
+            <div class="absolute inset-0 bg-black/50" wire:click="closeQr()"></div>
+
+            <div class="relative w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-900">
+                <h3 class="text-base font-semibold text-gray-900 dark:text-white">Kiosk QR</h3>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Scan to open kiosk on a device.</p>
+
+                <div class="mt-4 flex items-center justify-center">
+                    {{-- Server-rendered SVG (no external requests) --}}
+                    {!! QrCode::format('svg')
+                        ->size(240)
+                        ->margin(1)
+                        ->errorCorrection('M')
+                        ->generate($qrUrl) !!}
+                </div>
+
+                <div class="mt-6 flex justify-end">
+                    <button
+                        type="button"
+                        class="rounded-md bg-white px-3 py-1.5 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                               dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10"
+                        wire:click="closeQr()"
+                    >
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    @endif
 </section>

@@ -328,12 +328,20 @@ new class extends Component
             </div>
 
             <div class="flex items-center justify-center rounded-lg border border-gray-200 p-3 dark:border-white/10">
-                {{-- Zero-dep QR (uses a public QR image service). Replace with your in-app QR generator if preferred. --}}
-                <img
-                    alt="Check-in QR"
-                    class="h-36 w-36"
-                    src="{{ 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' . urlencode($checkinUrl) }}"
-                />
+                <a href="{{ route('corporate.leagues.qr.pdf', $league) }}"
+                title="Download printable QR (PDF)"
+                class="block transition hover:opacity-90 focus:opacity-90"
+                >
+                    <div class="h-36 w-36">
+                        <div class="h-full w-full [&>svg]:h-full [&>svg]:w-full">
+                            {!! QrCode::format('svg')
+                                ->size(300)   // large internal resolution
+                                ->margin(1)
+                                ->errorCorrection('M')
+                                ->generate($checkinUrl) !!}
+                        </div>
+                    </div>
+                </a>
             </div>
         </div>
     </div>

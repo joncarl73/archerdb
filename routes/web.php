@@ -1,6 +1,7 @@
 <?php
 
 // ← NEW
+use App\Http\Controllers\LeagueQrController;
 use App\Http\Controllers\PublicCheckinController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
@@ -120,8 +121,7 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         // Scoring Routes
         Route::get('leagues/{league}/scoring-sheet',
             [\App\Http\Controllers\LeagueScoringSheetController::class, '__invoke'])
-            ->name('leagues.scoring_sheet')
-            ->middleware(['auth']);
+            ->name('leagues.scoring_sheet');
 
         // Kiosk Manager (private) — already in your file
         Volt::route('leagues/{league}/kiosks', 'corporate.kiosks.index')
@@ -130,6 +130,10 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         // Live Score View
         Route::get('leagues/{league}/weeks/{week}/live', \App\Livewire\Corporate\Leagues\LiveScoring::class)
             ->name('leagues.weeks.live');
+
+        // QR League Code
+        Route::get('leagues/{league}/checkin-qr.pdf', [LeagueQrController::class, 'downloadCheckinQr'])
+            ->name('leagues.qr.pdf');
 
     });
 
