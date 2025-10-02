@@ -2,6 +2,7 @@
 
 // ← NEW
 use App\Http\Controllers\PublicCheckinController;
+use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
 use App\Models\League;
@@ -13,9 +14,17 @@ Route::get('/', function () {
     return view('landing.index');
 })->name('home');
 
+// Legal stuff
+// routes/web.php
+Route::view('/privacy', 'landing.privacy')->name('landing.privacy');
+Route::view('/terms', 'landing.terms')->name('landing.terms');
+Route::view('/contact', 'landing.contact')->name('landing.contact');
+
 Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'profile.completed'])
     ->name('dashboard');
+
+Route::get('/events/{uuid}', [PublicLeagueController::class, 'infoLanding'])->name('public.league.info.landing');
 
 Route::middleware(['auth', 'profile.completed'])->group(function () {
     Route::redirect('settings', 'settings/profile');

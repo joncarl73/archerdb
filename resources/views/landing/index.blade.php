@@ -157,22 +157,20 @@
     </div>
   </section>
 
-  {{-- FAQ --}}
-  <section id="faq" class="py-16 sm:py-24 bg-neutral-50 dark:bg-neutral-900">
-    <div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
-      <h2 class="text-3xl font-bold sm:text-4xl text-center">Frequently asked</h2>
-      <div class="mt-10 space-y-6">
-        @foreach ([
-          ['q'=>'Is ArcherDB free to start?','a'=>'Yes. Personal training is free. Clubs can upgrade anytime.'],
-          ['q'=>'Does it work offline?','a'=>'Scoring tolerates spotty connections; results sync when online.'],
-          ['q'=>'Can we import existing leagues?','a'=>'Yes—CSV import/export is available, with more integrations coming.'],
-        ] as $qa)
-          <details class="rounded-2xl border border-neutral-200 p-5 dark:border-neutral-800">
-            <summary class="cursor-pointer font-medium">{{ $qa['q'] }}</summary>
-            <p class="mt-2 text-sm text-neutral-600 dark:text-neutral-300">{{ $qa['a'] }}</p>
-          </details>
-        @endforeach
+  {{-- UPCOMING EVENTS (replaces FAQ) --}}
+  <section id="events" class="py-16 sm:py-24 bg-neutral-50 dark:bg-neutral-900">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div class="mx-auto max-w-2xl text-center">
+        <h2 class="text-3xl font-bold sm:text-4xl">Upcoming events</h2>
+        <p class="mt-3 text-neutral-600 dark:text-neutral-300">
+          Registration windows currently open and opening soon.
+        </p>
+      </div>
+
+      <div class="mt-10">
+        <livewire:landing.upcoming-events />
       </div>
     </div>
   </section>
+
 @endsection

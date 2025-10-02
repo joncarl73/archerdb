@@ -12,7 +12,7 @@
         <a href="#features" class="hover:opacity-80">Features</a>
         <a href="#partners" class="hover:opacity-80">Partners</a>
         <a href="#pricing" class="hover:opacity-80">Pricing</a>
-        <a href="#faq" class="hover:opacity-80">FAQ</a>
+        <a href="#events" class="hover:opacity-80">Upcoming Events</a>
       </nav>
     </div>
 

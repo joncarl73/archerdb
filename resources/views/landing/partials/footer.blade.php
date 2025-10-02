@@ -7,9 +7,7 @@
         <span class="font-semibold">ArcherDB</span>
       </div>
       <nav class="text-sm flex flex-wrap gap-4 text-neutral-600 dark:text-neutral-300">
-        <a href="#features">Features</a>
-        <a href="#pricing">Pricing</a>
-        <a href="#faq">FAQ</a>
+        <a href="/contact">Contact Us</a>
         <a href="/privacy">Privacy</a>
         <a href="/terms">Terms</a>
       </nav>
