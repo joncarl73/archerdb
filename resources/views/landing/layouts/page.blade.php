@@ -1,4 +1,4 @@
-@extends('landing.layout')
+@extends('landing.layouts.layout')
 
 @section('title', $title ?? 'ArcherDB')
 

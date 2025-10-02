@@ -1,5 +1,5 @@
 {{-- resources/views/landing/index.blade.php --}}
-@extends('landing.layout')
+@extends('landing.layouts.layout')
 
 @section('title', 'ArcherDB — Archery training & league scoring')
 
@@ -112,17 +112,26 @@
 
 
   {{-- CTA --}}
-  <section class="py-16 sm:py-24">
+  <section class="relative py-16 sm:py-24 overflow-hidden">
+    <div class="absolute inset-0 -z-10">
+      {{-- Light mode: top neutral-50 → bottom white --}}
+      {{-- Dark mode: top neutral-900 → bottom neutral-950 --}}
+      <div class="h-full w-full bg-gradient-to-b from-neutral-50 to-white dark:from-neutral-900 dark:to-neutral-950"></div>
+    </div>
+
     <div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 text-center">
       <h2 class="text-3xl font-bold sm:text-4xl">Ready to shoot higher scores?</h2>
-      <p class="mt-3 text-neutral-600 dark:text-neutral-300">Create your account and start a session in under a minute.</p>
+      <p class="mt-3 text-neutral-600 dark:text-neutral-300">
+        Create your account and start a session in under a minute.
+      </p>
       <div class="mt-8">
         <flux:button as="a" href="{{ route('register') }}" variant="primary" color="yellow" icon="hand-thumb-up">
-            Create Free Account
+          Create Free Account
         </flux:button>
       </div>
     </div>
   </section>
+
 
   {{-- PRICING (optional placeholder) --}}
   <section id="pricing" class="py-16 sm:py-24">

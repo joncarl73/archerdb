@@ -1,5 +1,5 @@
 {{-- resources/views/landing/league-info.blade.php --}}
-@extends('landing.layout')
+@extends('landing.layouts.layout')
 
 @section('title', $league->info->title ?? $league->title)
 

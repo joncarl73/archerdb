@@ -21,6 +21,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   @vite(['resources/css/app.css','resources/js/app.js'])
   @stack('meta')
+ @livewireStyles
 </head>
 <body class="min-h-dvh bg-white text-gray-900 dark:bg-neutral-950 dark:text-neutral-100">
   <div class="flex min-h-dvh flex-col">
@@ -65,5 +66,6 @@
     })();
   </script>
 
+@livewireScripts
 </body>
 </html>

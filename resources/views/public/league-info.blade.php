@@ -4,7 +4,7 @@
         {{-- Banner --}}
         @if($bannerUrl)
             <div class="overflow-hidden rounded-xl ring-1 ring-black/5">
-                <img src="{{ $bannerUrl }}" alt="{{ $league->title }} banner" class="w-full object-cover">
+                <img src="{{ $bannerUrl }}" alt="{{ $league->title }} banner" class="h-64 w-full object-cover sm:h-80 md:h-64">
             </div>
         @endif
 

@@ -15,7 +15,6 @@ Route::get('/', function () {
 })->name('home');
 
 // Legal stuff
-// routes/web.php
 Route::view('/privacy', 'landing.privacy')->name('landing.privacy');
 Route::view('/terms', 'landing.terms')->name('landing.terms');
 Route::view('/contact', 'landing.contact')->name('landing.contact');

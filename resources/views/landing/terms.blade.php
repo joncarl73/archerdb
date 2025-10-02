@@ -1,4 +1,4 @@
-@extends('landing.page')
+@extends('landing.layouts.page')
 
 @section('title', 'Terms & Conditions')
 
