@@ -1,11 +1,16 @@
 <?php
 
 // ← NEW
+use App\Http\Controllers\CheckoutReturnController;
 use App\Http\Controllers\LeagueQrController;
 use App\Http\Controllers\PublicCheckinController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
+use App\Http\Controllers\StartConnectForCurrentSellerController;
+use App\Http\Controllers\StartLeagueCheckoutController;
+use App\Http\Controllers\StripeReturnController;
+use App\Http\Controllers\StripeWebhookController;
 use App\Models\League;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
@@ -41,10 +46,21 @@ Route::middleware(['auth', 'profile.completed'])->group(function () {
     Volt::route('/training', 'training.index')->name('training.index');
     Volt::route('/training/{session}/record', 'training.record')->name('training.record')->whereNumber('session');
     Volt::route('/training/{session}/stats', 'training.stats')->name('training.stats');
+
+    // Payment Routes
+    Route::post('/checkout/leagues/{league:public_uuid}/start', StartLeagueCheckoutController::class)
+        ->name('checkout.league.start');
+
+    // After Stripe redirects back (informational — fulfillment happens via webhook)
+    Route::get('/checkout/return', CheckoutReturnController::class)
+        ->name('checkout.return');
 });
 
 // Onboarding Routes
 Volt::route('/onboarding', 'pages.onboarding')->name('onboarding')->middleware(['auth']);
+
+// Webhook Routes
+Route::post('/stripe/webhook', StripeWebhookController::class)->name('stripe.webhook');
 
 // Admin Routes
 Route::middleware(['auth', 'admin'])
@@ -185,5 +201,19 @@ Route::get('/k/{token}', [\App\Http\Controllers\KioskPublicController::class, 'l
 Route::get('/k/{token}/score/{checkin}', [\App\Http\Controllers\KioskPublicController::class, 'score'])
     ->whereNumber('checkin')
     ->name('kiosk.score');
+
+/*
+ * Below is used for stripe connect and payment flow
+ */
+Route::middleware(['auth', 'corporate'])->group(function () {
+    Route::get('/payments/connect/start', StartConnectForCurrentSellerController::class)
+        ->name('payments.connect.start');
+
+    Route::get('/payments/onboard/return', [StripeReturnController::class, 'return'])
+        ->name('payments.onboard.return');
+
+    Route::get('/payments/onboard/refresh', [StripeReturnController::class, 'refresh'])
+        ->name('payments.onboard.refresh');
+});
 
 require __DIR__.'/auth.php';

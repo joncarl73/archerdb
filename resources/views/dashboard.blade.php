@@ -221,6 +221,27 @@
             </div>
         </div>
 
+@php
+    $seller = \App\Models\Seller::where('owner_id', auth()->id())->first();
+    $needsSetup = false;
+    if ($seller?->stripe_account_id) {
+        try {
+            $acct = (new \Stripe\StripeClient(config('services.stripe.secret')))
+                ->accounts->retrieve($seller->stripe_account_id, []);
+            $needsSetup = ($acct->capabilities->card_payments ?? null) !== 'active'
+                       || ($acct->capabilities->transfers ?? null) !== 'active';
+        } catch (\Throwable $e) {
+            $needsSetup = true;
+        }
+    }
+@endphp
+
+@if($needsSetup)
+    <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
+        Payments setup required — <a href="{{ route('payments.connect.start') }}" class="underline">Finish Stripe onboarding</a>.
+    </div>
+@endif
+
         {{-- Bottom: Events (registration) --}}
         <div class="relative overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-900">
             <div class="p-4 border-b border-neutral-200 dark:border-white/10">

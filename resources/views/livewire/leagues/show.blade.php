@@ -109,6 +109,15 @@ new class extends Component
     public function openCsv(): void
     {
         Gate::authorize('update', $this->league);
+
+        // Block CSV import for CLOSED leagues
+        $typeVal = ($this->league->type->value ?? $this->league->type);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed leagues.');
+
+            return;
+        }
+
         $this->csv = null;
         $this->showCsvSheet = true;
     }
@@ -116,6 +125,14 @@ new class extends Component
     public function importCsv(): void
     {
         Gate::authorize('update', $this->league);
+
+        // Block CSV import for CLOSED leagues
+        $typeVal = ($this->league->type->value ?? $this->league->type);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed leagues.');
+
+            return;
+        }
 
         $this->validate([
             'csv' => ['required', 'file', 'mimes:csv,txt', 'max:10240'], // 10 MB
@@ -244,6 +261,8 @@ new class extends Component
         // Hide kiosk buttons unless league is tablet mode.
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
         $isTabletMode = ($mode === 'tablet');
+        $typeVal   = ($league->type->value ?? $league->type);
+        $isClosed  = ($typeVal === 'closed');
     @endphp
     {{-- Header --}}
     <div class="mx-auto max-w-7xl">
@@ -285,9 +304,11 @@ new class extends Component
                                 Download scoring sheet (PDF)
                             </flux:menu.item>
 
-                            <flux:menu.item href="{{ route('corporate.leagues.participants.template', $league) }}" icon="table-cells">
-                                Download CSV template
-                            </flux:menu.item>
+                            @unless($isClosed)
+                                <flux:menu.item href="{{ route('corporate.leagues.participants.template', $league) }}" icon="table-cells">
+                                    Download CSV template
+                                </flux:menu.item>
+                            @endunless
 
                             <flux:menu.item href="{{ route('corporate.leagues.participants.export', $league) }}" icon="users">
                                 Export participants
@@ -296,10 +317,11 @@ new class extends Component
                     </flux:dropdown>
 
                     {{-- Upload CSV --}}
-        
-                    <flux:button wire:click="openCsv" variant="primary" color="indigo" icon="arrow-up-tray">
-                        Upload CSV
-                    </flux:button>
+                    @unless($isClosed)
+                        <flux:button wire:click="openCsv" variant="primary" color="indigo" icon="arrow-up-tray">
+                            Upload CSV
+                        </flux:button>
+                    @endunless
                 </div>
             </div>
         </div>

@@ -2,6 +2,7 @@
 
 use App\Models\League;
 use App\Models\LeagueInfo;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Volt\Component;
@@ -16,7 +17,7 @@ new class extends Component
 
     public string $title = '';
 
-    public ?string $registration_url = null; // NEW
+    public ?string $registration_url = null; // For OPEN leagues only
 
     public string $content_html = '';
 
@@ -30,6 +31,13 @@ new class extends Component
 
     public ?string $banner_url = null;
 
+    // Payment (CLOSED leagues)
+    public ?int $price_cents = null;          // persisted cents
+
+    public ?string $price_dollars = null;     // UI field (e.g., "150.00")
+
+    public string $currency = 'USD';
+
     public function mount(League $league): void
     {
         Gate::authorize('update', $league);
@@ -38,43 +46,304 @@ new class extends Component
         $this->info = $league->info ?: new LeagueInfo(['league_id' => $league->id]);
 
         $this->title = (string) ($this->info->title ?? $league->title);
-        $this->registration_url = $this->info->registration_url ?? null; // NEW
+        $this->registration_url = $this->info->registration_url ?? null;
         $this->content_html = (string) ($this->info->content_html ?? '');
         $this->is_published = (bool) ($this->info->is_published ?? false);
+
+        // Dates → YYYY-MM-DD strings for <input type="date">
+        $this->registration_start_date = $this->asYmd($league->registration_start_date);
+        $this->registration_end_date = $this->asYmd($league->registration_end_date);
+
+        // Payment fields
+        $this->price_cents = $league->price_cents;
+        $this->price_dollars = $league->price_cents !== null
+            ? number_format(((int) $league->price_cents) / 100, 2, '.', '')
+            : null;
+        $this->currency = $league->currency ?: 'USD';
 
         if ($this->info?->banner_path && Storage::disk('public')->exists($this->info->banner_path)) {
             $this->banner_url = Storage::url($this->info->banner_path);
         }
     }
 
+    private function upsertProductForLeague(): void
+    {
+        $isClosed = ($this->league->type->value ?? $this->league->type) === 'closed';
+        if (! $isClosed) {
+            return;
+        }
+
+        $owner = $this->league->owner()->first();
+        $role = $this->normalizeRole($owner?->role);
+
+        // Determine seller + platform fee
+        $sellerId = null;
+        $feeBps = 0;
+        $sellerStripe = null;
+
+        if ($role === 'corporate') {
+            $seller = \App\Models\Seller::firstOrCreate(
+                ['owner_id' => $owner->id],
+                ['name' => $owner->name.' — Organizer']
+            );
+
+            // If they haven't onboarded yet, we can't create catalog on their account
+            if (empty($seller->stripe_account_id)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'title' => 'This is a paid (closed) event, but the organizer is not connected to Stripe yet. Please complete Stripe onboarding first.',
+                ]);
+            }
+
+            $sellerId = $seller->id;
+            $sellerStripe = $seller->stripe_account_id;
+            $feeBps = (int) ($seller->default_platform_fee_bps ?? config('payments.default_platform_fee_bps', 500));
+        } else {
+            // Admin/internal: platform seller, 0 bps (platform keeps full)
+            $sellerId = $this->getPlatformSellerId();
+            $feeBps = 0;
+            $sellerStripe = null; // create catalog on platform account
+        }
+
+        // Upsert our local Product record (polymorphic)
+        $product = \App\Models\Product::firstOrNew([
+            'productable_type' => \App\Models\League::class,
+            'productable_id' => $this->league->id,
+        ]);
+
+        $product->fill([
+            'seller_id' => $sellerId,
+            'name' => $this->title ?: ($this->league->title.' registration'),
+            'currency' => $this->league->currency,
+            'price_cents' => (int) $this->league->price_cents,
+            'settlement_mode' => 'closed',
+            'metadata' => ['league_public_uuid' => $this->league->public_uuid],
+            'is_active' => true,
+        ]);
+
+        if (is_null($product->platform_fee_bps)) {
+            $product->platform_fee_bps = $feeBps;
+        }
+
+        $product->save();
+
+        // ⬇️ Ensure Stripe Product/Price exist on the correct account & persist on league
+        $this->ensureStripeCatalog($product, $sellerStripe);
+    }
+
+    private function ensureStripeCatalog(\App\Models\Product $product, ?string $connectedAccountId): array
+    {
+        // Create/reuse Stripe Product & Price on the correct account and
+        // persist their IDs on the leagues table.
+        \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
+
+        $opts = [];
+        if (! empty($connectedAccountId)) {
+            $opts['stripe_account'] = $connectedAccountId; // direct charge account
+        }
+
+        $league = $this->league;
+        $name = $product->name ?: ($league->title.' registration');
+
+        // 1) Product
+        $stripeProductId = $league->stripe_product_id;
+        if (! $stripeProductId) {
+            $sp = \Stripe\Product::create(['name' => $name], $opts);
+            $stripeProductId = $sp->id;
+        }
+
+        // 2) Price (re-use if amount/currency/product matches; else create new)
+        $stripePriceId = $league->stripe_price_id;
+        $needNewPrice = true;
+
+        if ($stripePriceId) {
+            try {
+                $price = \Stripe\Price::retrieve($stripePriceId, $opts);
+                if ((int) $price->unit_amount === (int) $product->price_cents
+                    && strtolower($price->currency) === strtolower($product->currency)
+                    && $price->product === $stripeProductId) {
+                    $needNewPrice = false;
+                }
+            } catch (\Throwable $e) {
+                $needNewPrice = true;
+            }
+        }
+
+        if ($needNewPrice) {
+            $newPrice = \Stripe\Price::create([
+                'unit_amount' => (int) $product->price_cents,
+                'currency' => strtolower($product->currency),
+                'product' => $stripeProductId,
+            ], $opts);
+            $stripePriceId = $newPrice->id;
+        }
+
+        // 3) Persist on leagues table for later checkout usage
+        $league->stripe_account_id = $connectedAccountId ?: null;
+        $league->stripe_product_id = $stripeProductId;
+        $league->stripe_price_id = $stripePriceId;
+        $league->save();
+
+        return [$stripeProductId, $stripePriceId];
+    }
+
+    /**
+     * Returns the Seller ID to use for platform/internal sales.
+     */
+    private function getPlatformSellerId(): int
+    {
+        $platformOwnerId = (int) (config('payments.platform_owner_user_id') ?? 0);
+        $owner = $platformOwnerId
+            ? \App\Models\User::find($platformOwnerId)
+            : null;
+
+        if (! $owner) {
+            $owner = \App\Models\User::where('role', 'administrator')->orderBy('id')->first();
+        }
+
+        if (! $owner) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'title' => 'No administrator user found to own the platform Seller. Create an admin account or set payments.platform_owner_user_id.',
+            ]);
+        }
+
+        $seller = \App\Models\Seller::firstOrCreate(
+            ['owner_id' => $owner->id],
+            [
+                'name' => (config('app.name', 'ArcherDB').' — Platform'),
+                'default_platform_fee_bps' => 0,
+                'active' => true,
+            ]
+        );
+
+        return $seller->id;
+    }
+
+    private function normalizeRole(null|string|\UnitEnum $role): string
+    {
+        if ($role instanceof \BackedEnum) {
+            return strtolower((string) $role->value);
+        }
+        if ($role instanceof \UnitEnum) {
+            return strtolower($role->name);
+        }
+
+        return strtolower((string) ($role ?? 'standard'));
+    }
+
+    private function asYmd($value): ?string
+    {
+        if (empty($value)) {
+            return null;
+        }
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d');
+        }
+        try {
+            return Carbon::parse($value)->format('Y-m-d');
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private function toCents(null|string|int|float $input): ?int
+    {
+        if ($input === null || $input === '') {
+            return null;
+        }
+        $s = trim((string) $input);
+        // Remove $ symbol, spaces, and thousands separators
+        $s = str_replace(['$', ' ', ','], '', $s);
+
+        // Allow digits with optional . and up to 2 decimals
+        if (! preg_match('/^-?\d+(\.\d{1,2})?$/', $s)) {
+            return null;
+        }
+
+        $neg = $s[0] === '-';
+        if ($neg) {
+            $s = substr($s, 1);
+        }
+
+        $parts = explode('.', $s, 2);
+        $dollars = (int) ($parts[0] ?: 0);
+        $centsPart = isset($parts[1]) ? substr(str_pad($parts[1], 2, '0'), 0, 2) : '00';
+
+        $cents = $dollars * 100 + (int) $centsPart;
+
+        return $neg ? -$cents : $cents;
+    }
+
     public function save(): void
     {
         Gate::authorize('update', $this->league);
 
+        $type = ($this->league->type->value ?? $this->league->type);
+        $isOpen = $type === 'open';
+        $isClosed = $type === 'closed';
+
+        // Validate basics; price in dollars (string) for CLOSED
         $this->validate([
             'title' => ['nullable', 'string', 'max:255'],
-            'registration_url' => ['nullable', 'url', 'max:255'], // NEW
+            'registration_url' => [$isOpen ? 'required' : 'nullable', 'url', 'max:255'],
             'content_html' => ['nullable', 'string'],
             'is_published' => ['boolean'],
-            'registration_start_date' => ['nullable', 'date'],
-            'registration_end_date' => ['nullable', 'date'],
+            'registration_start_date' => [$isClosed ? 'required' : 'nullable', 'date'],
+            'registration_end_date' => [$isClosed ? 'required' : 'nullable', 'date'],
+            'price_dollars' => [$isClosed ? 'required' : 'nullable', 'string', 'max:20'],
+            'currency' => [$isClosed ? 'required' : 'nullable', 'string', 'size:3'],
+        ], [
+            'registration_url.required' => 'External URL is required for open events.',
+            'price_dollars.required' => 'Price is required for closed events.',
         ]);
 
-        $info = $this->league->info ?: new LeagueInfo(['league_id' => $this->league->id]);
+        // Convert dollars → cents (and enforce min $1.00 if closed)
+        if ($isClosed) {
+            $cents = $this->toCents($this->price_dollars);
+            if ($cents === null || $cents < 100) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'price_dollars' => 'Enter a valid price of at least $1.00 (e.g., 150.00).',
+                ]);
+            }
+            $this->price_cents = $cents;
+        } else {
+            $this->price_cents = null;
+        }
 
+        // Persist Info
+        $info = $this->league->info ?: new LeagueInfo(['league_id' => $this->league->id]);
         $info->fill([
             'title' => $this->title ?: $this->league->title,
-            'registration_url' => $this->registration_url, // NEW
+            'registration_url' => $this->registration_url,
             'content_html' => $this->content_html,
             'is_published' => $this->is_published,
         ]);
-
         $info->save();
         $this->info = $info;
 
-        $this->league->registration_start_date = $this->registration_start_date ?: null;
-        $this->league->registration_end_date = $this->registration_end_date ?: null;
+        // Persist League dates + payment fields
+        $start = $this->registration_start_date
+            ? Carbon::createFromFormat('Y-m-d', $this->registration_start_date)->toDateString()
+            : null;
+
+        $end = $this->registration_end_date
+            ? Carbon::createFromFormat('Y-m-d', $this->registration_end_date)->toDateString()
+            : null;
+
+        $this->league->registration_start_date = $start;
+        $this->league->registration_end_date = $end;
+
+        if ($isClosed) {
+            $this->league->price_cents = $this->price_cents;
+            $this->league->currency = strtoupper($this->currency ?: 'USD');
+        } else {
+            $this->league->price_cents = null;
+        }
+
         $this->league->save();
+
+        if ($isClosed) {
+            $this->upsertProductForLeague();
+        }
 
         $this->dispatch('toast', type: 'success', message: 'League info saved.');
     }
@@ -82,10 +351,7 @@ new class extends Component
     public function uploadBanner(): void
     {
         Gate::authorize('update', $this->league);
-
-        $this->validate([
-            'banner' => ['required', 'image', 'max:8192', 'mimes:jpg,jpeg,png,webp,avif'],
-        ]);
+        $this->validate(['banner' => ['required', 'image', 'max:8192', 'mimes:jpg,jpeg,png,webp,avif']]);
 
         $tmp = $this->banner->getRealPath();
         if (! $tmp || ! file_exists($tmp)) {
@@ -168,6 +434,7 @@ new class extends Component
     }
 }; ?>
 
+
 <section class="w-full">
     <div class="mx-auto max-w-5xl">
         <div class="mb-6">
@@ -205,7 +472,7 @@ new class extends Component
             </div>
         </div>
 
-        {{-- Content + External URL --}}
+        {{-- Content + Registration config --}}
         <div class="mt-6 overflow-hidden rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-neutral-900">
             <div class="p-4 border-b border-gray-200 dark:border-white/10">
                 <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Info content</h2>
@@ -214,10 +481,13 @@ new class extends Component
             <div class="p-4 space-y-4">
                 <flux:input wire:model.defer="title" :label="__('Title')" type="text" placeholder="Optional — defaults to league title" />
 
-                {{-- Show remote registration URL if league is OPEN --}}
                 @php
-                    $isOpenLeague = ($league->type->value ?? $league->type) === 'open';
+                    $typeVal = ($league->type->value ?? $league->type);
+                    $isOpenLeague = $typeVal === 'open';
+                    $isClosedLeague = $typeVal === 'closed';
                 @endphp
+
+                {{-- OPEN: external registration URL --}}
                 @if($isOpenLeague)
                     <flux:input
                         wire:model.defer="registration_url"
@@ -227,7 +497,7 @@ new class extends Component
                     />
                 @endif
 
-                {{-- Registration window --}}
+                {{-- Registration window (both types; required for CLOSED) --}}
                 <div class="grid gap-4 sm:grid-cols-2">
                     <flux:input
                         wire:model.defer="registration_start_date"
@@ -244,11 +514,32 @@ new class extends Component
                     These dates control when registration-related UI appears across ArcherDB.
                 </p>
 
-                {{-- Quill WYSIWYG (wire:ignore and hidden input sync) --}}
+                {{-- CLOSED: price & currency --}}
+                @if($isClosedLeague)
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <flux:input
+                            wire:model.defer="price_dollars"
+                            :label="__('Price (in USD)')"
+                            type="text"
+                            inputmode="decimal"
+                            placeholder="150.00"
+                        />
+                        <flux:input
+                            wire:model.defer="currency"
+                            :label="__('Currency')"
+                            type="text"
+                            maxlength="3"
+                        />
+                    </div>
+                    <p class="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                        Enter the price in dollars (e.g., 150.00).
+                    </p>
+                @endif
+
+                {{-- Quill WYSIWYG --}}
                 <div>
                     <flux:label>Content</flux:label>
 
-                    {{-- Initial content payload (always available on first render) --}}
                     <script id="league-info-initial" type="application/json">
                         {!! json_encode($content_html ?? '') !!}
                     </script>
@@ -258,10 +549,8 @@ new class extends Component
                             class="rounded-md border border-neutral-300 dark:border-white/10 min-h-[220px]"></div>
                     </div>
 
-                    {{-- Hidden input Livewire binds to; we also seed its value for SSR/hydration --}}
                     <input id="content_html" type="hidden" wire:model="content_html" value="{{ $content_html }}">
                 </div>
-
 
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
@@ -282,38 +571,35 @@ new class extends Component
     <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
 
     <style>
-    /* Rounded borders + subtle backgrounds (light) */
     #quill-editor .ql-toolbar { border-radius: .375rem .375rem 0 0; }
     #quill-editor .ql-container { border-radius: 0 0 .375rem .375rem; min-height: 220px; }
-    .ql-snow .ql-toolbar { background-color: #ffffff; border-color: #e5e7eb; }      /* neutral-100/200 */
+    .ql-snow .ql-toolbar { background-color: #ffffff; border-color: #e5e7eb; }
     .ql-snow .ql-container { background-color: #ffffff; border-color: #e5e7eb; }
-    .ql-snow .ql-editor   { color: #0a0a0a; }                                        /* neutral-950-ish */
-    .ql-editor::placeholder { color: #9ca3af; }                                      /* neutral-400 */
-    .ql-snow a { color: #4f46e5; }                                                    /* indigo-600 */
+    .ql-snow .ql-editor   { color: #0a0a0a; }
+    .ql-editor::placeholder { color: #9ca3af; }
+    .ql-snow a { color: #4f46e5; }
 
-    /* Dark mode */
     .dark .ql-snow .ql-toolbar { background-color: #0b0f19; border-color: rgba(255,255,255,0.08); }
     .dark .ql-snow .ql-container { background-color: #0b0f19; border-color: rgba(255,255,255,0.08); }
     .dark .ql-snow .ql-editor { color: #e5e7eb; }
     .dark .ql-editor::placeholder { color: #9ca3af; }
     .dark .ql-snow .ql-stroke { stroke: #e5e7eb; }
     .dark .ql-snow .ql-fill { fill: #e5e7eb; }
-    .dark .ql-snow a { color: #8b93ff; } /* softer indigo in dark */
+    .dark .ql-snow a { color: #8b93ff; }
     </style>
 
     <script>
     (function () {
-    function initialHTML() {
-        // Prefer the JSON script (always present), fallback to hidden input
+      function initialHTML() {
         const script = document.getElementById('league-info-initial');
         if (script) {
-        try { return JSON.parse(script.textContent || ''); } catch (_) {}
+          try { return JSON.parse(script.textContent || ''); } catch (_) {}
         }
         const hidden = document.getElementById('content_html');
         return hidden ? hidden.value || '' : '';
-    }
+      }
 
-    function initQuillOnce() {
+      function initQuillOnce() {
         if (!window.Quill) { setTimeout(initQuillOnce, 50); return; }
 
         const el = document.getElementById('quill-editor');
@@ -321,53 +607,46 @@ new class extends Component
         if (!el || !hidden || el.__quillInited) return;
 
         const quill = new Quill(el, {
-        theme: 'snow',
-        placeholder: 'Write your league info...',
-        modules: {
+          theme: 'snow',
+          placeholder: 'Write your league info...',
+          modules: {
             toolbar: [
-            [{ header: [2,3,false] }],
-            ['bold','italic','underline','strike'],
-            [{ list: 'ordered' }, { list: 'bullet' }],
-            [{ align: [] }],
-            ['link','clean']
+              [{ header: [2,3,false] }],
+              ['bold','italic','underline','strike'],
+              [{ list: 'ordered' }, { list: 'bullet' }],
+              [{ align: [] }],
+              ['link','clean']
             ]
-        }
+          }
         });
 
         el.__quillInited = true;
         window.__leagueQuill = quill;
 
-        // Load existing HTML content into Quill
         const html = initialHTML();
         if (html && typeof quill.clipboard?.dangerouslyPasteHTML === 'function') {
-        quill.clipboard.dangerouslyPasteHTML(html);
+          quill.clipboard.dangerouslyPasteHTML(html);
         } else if (html) {
-        // minimal fallback
-        quill.root.innerHTML = html;
+          quill.root.innerHTML = html;
         }
 
-        // Keep hidden input in sync with editor changes
         quill.on('text-change', function () {
-        const current = el.querySelector('.ql-editor')?.innerHTML ?? '';
-        if (hidden.value !== current) {
+          const current = el.querySelector('.ql-editor')?.innerHTML ?? '';
+          if (hidden.value !== current) {
             hidden.value = current;
             hidden.dispatchEvent(new Event('input'));
-        }
+          }
         });
-    }
+      }
 
-    // Run when page is ready
-    if (document.readyState === 'loading') {
+      if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initQuillOnce);
-    } else {
+      } else {
         initQuillOnce();
-    }
+      }
 
-    // Re-run after Livewire SPA navigations or component refreshes
-    document.addEventListener('livewire:load', () => setTimeout(initQuillOnce, 0));
-    document.addEventListener('livewire:navigated', () => setTimeout(initQuillOnce, 0));
+      document.addEventListener('livewire:load', () => setTimeout(initQuillOnce, 0));
+      document.addEventListener('livewire:navigated', () => setTimeout(initQuillOnce, 0));
     })();
     </script>
-
-
 </section>

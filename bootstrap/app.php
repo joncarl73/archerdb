@@ -24,6 +24,10 @@ return Application::configure(basePath: dirname(__DIR__))
             'scoring.mode' => EnsureScoringMode::class,
         ]);
 
+        $middleware->validateCsrfTokens(except: [
+            'stripe/*',
+        ]);
+
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

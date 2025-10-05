@@ -6,6 +6,13 @@
     <body class="min-h-screen bg-white dark:bg-zinc-800">
         {{--  Impersonation Top bar --}}
 
+        @php
+            use App\Models\Seller;
+
+            $seller = auth()->check()
+                ? Seller::firstWhere('owner_id', auth()->id())
+                : null;
+        @endphp
 
         @if (session('impersonator_id'))
         <div class="sticky top-0 z-[1000] bg-amber-500 text-black">
@@ -67,6 +74,14 @@
                             wire:navigate>
                         {{ __('Leagues') }}
                         </flux:navlist.item>
+
+
+                        @if (!$seller || !$seller->stripe_account_id)
+                            <flux:navlist.item icon="credit-card" :href="route('payments.connect.start')">
+                                {{ __('Connect Stripe') }}
+                            </flux:navlist.item>
+                        @endif
+
                     </flux:navlist.group>
                 @endcorporate
 

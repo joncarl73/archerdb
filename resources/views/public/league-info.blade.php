@@ -8,6 +8,23 @@
             </div>
         @endif
 
+        {{-- Errors / flash --}}
+        @if ($errors->any())
+            <div class="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900 dark:border-rose-900/40 dark:bg-rose-900/20 dark:text-rose-200">
+                <div class="font-semibold mb-1">Unable to start registration:</div>
+                <ul class="list-disc pl-5">
+                    @foreach ($errors->all() as $err)
+                        <li>{{ $err }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
+        @if (session('error'))
+            <div class="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900 dark:border-rose-900/40 dark:bg-rose-900/20 dark:text-rose-200">
+                {{ session('error') }}
+            </div>
+        @endif
+
         {{-- Heading & meta --}}
         <div class="rounded-xl border border-neutral-200 bg-white p-5 dark:border-white/10 dark:bg-neutral-900">
             <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -26,46 +43,120 @@
                 {{-- Registration status / CTA --}}
                 <div class="mt-2 sm:mt-0">
                     @php
-                        $fmt = fn($d) => $d ? $d->format('Y-m-d') : null;
+                        $fmt          = fn($d) => $d ? $d->format('Y-m-d') : null;
+
+                        $typeVal      = ($league->type->value ?? $league->type);
+                        $isClosed     = $typeVal === 'closed';
+                        $isOpen       = $typeVal === 'open';
+
+                        $priceCents   = $league->price_cents;
+                        $currency     = strtoupper($league->currency ?? 'USD');
+                        $priceDisplay = $priceCents !== null ? number_format($priceCents / 100, 2) : null;
                     @endphp
 
-                    @if($window === 'during')
-                        @if($registrationUrl)
-                            <a href="{{ $registrationUrl }}" target="_blank" rel="noopener"
-                               class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
-                                Register now
-                                <svg class="ml-2 h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                    <path fill-rule="evenodd" clip-rule="evenodd"
-                                          d="M12.293 2.293a1 1 0 011.414 0l4 4a.997.997 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a.997.997 0 010-1.414l8-8zM5 13l2 2 8-8-2-2-8 8z"/>
-                                </svg>
-                            </a>
-                            @if($start || $end)
-                                <div class="mt-1 text-right text-xs text-neutral-500 dark:text-neutral-400">
-                                    @if($start) Opens {{ $fmt($start) }}. @endif
+                    {{-- CLOSED leagues: on-site registration + checkout --}}
+                    @if($isClosed)
+                        @if($window === 'during')
+                            @if($priceDisplay)
+                                @auth
+                                    <form method="POST" action="{{ route('checkout.league.start', ['league' => $league->public_uuid]) }}">
+                                        @csrf
+                                        {{-- Use a plain button to avoid any component submit quirks --}}
+                                        <button
+                                            type="submit"
+                                            class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                                        >
+                                            Register now — {{ $currency }} {{ $priceDisplay }}
+                                        </button>
+                                    </form>
+                                    @if($start || $end)
+                                        <div class="mt-1 text-right text-xs text-neutral-500 dark:text-neutral-400">
+                                            @if($start) Opens {{ $fmt($start) }}. @endif
+                                            @if($end) Closes {{ $fmt($end) }}. @endif
+                                        </div>
+                                    @endif
+                                @else
+                                    <a href="{{ route('login') }}?redirect={{ urlencode(request()->fullUrl()) }}"
+                                       class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                        Log in to register — {{ $currency }} {{ $priceDisplay }}
+                                    </a>
+                                @endauth
+                            @else
+                                <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
+                                    Registration product isn’t configured yet. Set a price on the info page.
+                                </div>
+                            @endif
+                        @elseif($window === 'before')
+                            <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
+                                Registration opens {{ $fmt($start) }}.
+                            </div>
+                        @elseif($window === 'after')
+                            <div class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-900 ring-1 ring-inset ring-rose-200 dark:bg-rose-900/20 dark:text-rose-200 dark:ring-rose-900/40">
+                                Registration closed{{ $end ? ' on '.$fmt($end) : '' }}.
+                            </div>
+                        @else
+                            {{-- No dates configured → allow immediate registration if priced --}}
+                            @if($priceDisplay)
+                                @auth
+                                    <form method="POST" action="{{ route('checkout.league.start', ['league' => $league->public_uuid]) }}">
+                                        @csrf
+                                        <button
+                                            type="submit"
+                                            class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                                        >
+                                            Register — {{ $currency }} {{ $priceDisplay }}
+                                        </button>
+                                    </form>
+                                @else
+                                    <a href="{{ route('login') }}?redirect={{ urlencode(request()->fullUrl()) }}"
+                                       class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                        Log in to register — {{ $currency }} {{ $priceDisplay }}
+                                    </a>
+                                @endauth
+                            @endif
+                        @endif
+                    @endif
+
+                    {{-- OPEN leagues: external URL --}}
+                    @if($isOpen)
+                        @if($window === 'during')
+                            @if($registrationUrl)
+                                <a href="{{ $registrationUrl }}" target="_blank" rel="noopener"
+                                   class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                    Register now
+                                    <svg class="ml-2 h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                        <path fill-rule="evenodd" clip-rule="evenodd"
+                                              d="M12.293 2.293a1 1 0 011.414 0l4 4a.997.997 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a.997.997 0 010-1.414l8-8zM5 13l2 2 8-8-2-2-8 8z"/>
+                                    </svg>
+                                </a>
+                                @if($start || $end)
+                                    <div class="mt-1 text-right text-xs text-neutral-500 dark:text-neutral-400">
+                                        @if($start) Opens {{ $fmt($start) }}. @endif
+                                        @if($end) Closes {{ $fmt($end) }}. @endif
+                                    </div>
+                                @endif
+                            @else
+                                <div class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/40">
+                                    Registration is open.
                                     @if($end) Closes {{ $fmt($end) }}. @endif
                                 </div>
                             @endif
-                        @else
-                            <div class="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/40">
-                                Registration is open.
-                                @if($end) Closes {{ $fmt($end) }}. @endif
+                        @elseif($window === 'before')
+                            <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
+                                Registration opens {{ $fmt($start) }}.
                             </div>
-                        @endif
-                    @elseif($window === 'before')
-                        <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
-                            Registration opens {{ $fmt($start) }}.
-                        </div>
-                    @elseif($window === 'after')
-                        <div class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-900 ring-1 ring-inset ring-rose-200 dark:bg-rose-900/20 dark:text-rose-200 dark:ring-rose-900/40">
-                            Registration closed{{ $end ? ' on '.$fmt($end) : '' }}.
-                        </div>
-                    @else
-                        {{-- No dates configured --}}
-                        @if($registrationUrl)
-                            <a href="{{ $registrationUrl }}" target="_blank" rel="noopener"
-                               class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
-                                Register
-                            </a>
+                        @elseif($window === 'after')
+                            <div class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-900 ring-1 ring-inset ring-rose-200 dark:bg-rose-900/20 dark:text-rose-200 dark:ring-rose-900/40">
+                                Registration closed{{ $end ? ' on '.$fmt($end) : '' }}.
+                            </div>
+                        @else
+                            {{-- No dates configured --}}
+                            @if($registrationUrl)
+                                <a href="{{ $registrationUrl }}" target="_blank" rel="noopener"
+                                   class="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                    Register
+                                </a>
+                            @endif
                         @endif
                     @endif
                 </div>
