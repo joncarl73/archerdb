@@ -45,6 +45,13 @@ class AppServiceProvider extends ServiceProvider
             return $u && $u->role === UserRole::Administrator;
         });
 
+        // Blade directive for pro-only content
+        Blade::if('pro', function () {
+            $u = Auth::user();
+
+            return $u && $u->isPro();
+        });
+
         // Policy mapping for League
         Gate::policy(League::class, LeaguePolicy::class);
 

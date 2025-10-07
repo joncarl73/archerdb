@@ -64,7 +64,34 @@
                     {{ __('Training') }}
                     </flux:navlist.item>
 
+                    @pro
+                        <flux:navlist.item icon="identification"
+                            :href="route('pro.landing')"
+                            :current="request()->routeIs('pro.landing')"
+                            wire:navigate>
+                        {{ __('Manage Pro') }}
+                        </flux:navlist.item>
+                    @else
+                        <flux:navlist.item icon="bolt"
+                            :href="route('pro.landing')"
+                            :current="request()->routeIs('pro.landing')"
+                            wire:navigate>
+                        {{ __('Upgrade To Pro') }}
+                        </flux:navlist.item>
+                    @endpro
+
                 </flux:navlist.group>
+
+                @pro
+                    <flux:navlist.group heading="Pro" class="grid mt-2">
+                        <flux:navlist.item icon="identification"
+                            :href="route('pro.landing')"
+                            :current="request()->routeIs('pro.landing')"
+                            wire:navigate>
+                            {{ __('Pro Stuff Here') }}
+                        </flux:navlist.item>
+                    </flux:navlist.group>
+                @endpro
 
                 @corporate
                     <flux:navlist.group heading="Corporate" class="grid mt-2">

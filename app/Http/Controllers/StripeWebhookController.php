@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\League;
 use App\Models\LeagueParticipant;
 use App\Models\Order;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class StripeWebhookController extends Controller
@@ -13,12 +15,12 @@ class StripeWebhookController extends Controller
     public function __invoke(Request $request)
     {
         $sigHeader = $request->header('Stripe-Signature', '');
-        $connectAcct = $request->header('Stripe-Account'); // present for connect events
+        $connectAcct = $request->header('Stripe-Account'); // for Connect (not used for Pro)
         $payload = $request->getContent();
 
         $secret = config('services.stripe.webhook_secret');
         if (! $secret) {
-            Log::error('Stripe webhook secret not configured'); // fail fast in dev
+            Log::error('Stripe webhook secret not configured');
 
             return response()->json(['error' => 'secret missing'], 500);
         }
@@ -45,6 +47,7 @@ class StripeWebhookController extends Controller
         ]);
 
         switch ($type) {
+            // ---- Checkout for Leagues (orders) ----
             case 'checkout.session.completed':
                 $this->handleSessionCompleted($obj, $connectAcct);
                 break;
@@ -53,8 +56,26 @@ class StripeWebhookController extends Controller
                 $this->handlePiSucceeded($obj, $connectAcct);
                 break;
 
-            case 'charge.succeeded': // used to backfill charge/transfer if needed
+            case 'charge.succeeded':
                 $this->handleChargeSucceeded($obj, $connectAcct);
+                break;
+
+                // ---- Subscriptions for Pro ----
+            case 'customer.subscription.created':
+                $this->handleSubscriptionUpsert($obj); // treat like updated
+                break;
+
+            case 'customer.subscription.updated':
+                $this->handleSubscriptionUpsert($obj);
+                break;
+
+            case 'customer.subscription.deleted':
+                $this->handleSubscriptionDeleted($obj);
+                break;
+
+                // (Optional) invoice.paid can be used to re-enable if needed
+            case 'invoice.paid':
+                $this->handleInvoicePaid($obj);
                 break;
 
             default:
@@ -65,23 +86,22 @@ class StripeWebhookController extends Controller
         return response()->json(['ok' => true]);
     }
 
+    // ---------------------------
+    // League order fulfillment
+    // ---------------------------
+
     private function handleSessionCompleted($session, ?string $acct): void
     {
         $sessionId = $session->id ?? null;
         $clientRef = $session->client_reference_id ?? null;
         $order = null;
 
-        // Resolve by client_reference_id (we set this to Order ID)
         if ($clientRef) {
             $order = Order::find((int) $clientRef);
         }
-
-        // Fallback: by stored session id
         if (! $order && $sessionId) {
             $order = Order::where('stripe_checkout_session_id', $sessionId)->first();
         }
-
-        // Fallback: by metadata.order_id
         if (! $order) {
             $meta = $this->toArray($session->metadata ?? null);
             if (! empty($meta['order_id'])) {
@@ -96,10 +116,10 @@ class StripeWebhookController extends Controller
                 'metadata' => $this->toArray($session->metadata ?? null),
             ]);
 
+            // If this was a Pro subscription checkout, it’s fine (handled by subscription events).
             return;
         }
 
-        // Attach PI/Charge/Transfer and mark paid
         $piId = is_string($session->payment_intent ?? null)
             ? $session->payment_intent
             : ($session->payment_intent->id ?? null);
@@ -113,19 +133,20 @@ class StripeWebhookController extends Controller
 
     private function handlePiSucceeded($pi, ?string $acct): void
     {
+        // This PI fires for both orders and subscriptions.
+        // Orders carry metadata.order_id; subscription PIs typically don’t (Stripe creates them).
         $meta = $this->toArray($pi->metadata ?? null);
         $order = null;
 
         if (! empty($meta['order_id'])) {
             $order = Order::find((int) $meta['order_id']);
         }
-
         if (! $order) {
             $order = Order::where('stripe_payment_intent_id', $pi->id)->first();
         }
 
         if (! $order) {
-            Log::warning('No Order matched for payment_intent.succeeded', [
+            Log::info('payment_intent.succeeded (non-subscription) but no Order matched', [
                 'pi' => $pi->id ?? null,
                 'meta' => $meta,
                 'acct' => $acct,
@@ -160,14 +181,12 @@ class StripeWebhookController extends Controller
         \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
 
         $opts = [];
-        // For direct charges, fetch from the connected account
         if ($order->stripe_connected_account_id) {
             $opts['stripe_account'] = $order->stripe_connected_account_id;
         } elseif ($acct) {
-            $opts['stripe_account'] = $acct; // header from webhook
+            $opts['stripe_account'] = $acct;
         }
 
-        // Retrieve PI to get latest_charge and (if direct charge) transfer id on the charge
         $chargeId = null;
         $transferId = null;
 
@@ -197,7 +216,6 @@ class StripeWebhookController extends Controller
         $order->status = \App\Models\Order::STATUS_PAID;
         $order->save();
 
-        // Auto-register participant on success (closed leagues)
         $this->ensureParticipantCreated($order);
     }
 
@@ -219,21 +237,199 @@ class StripeWebhookController extends Controller
             return;
         }
 
-        // Avoid duplicates – tie by user_id if present
         $exists = LeagueParticipant::where('league_id', $league->id)
             ->where('user_id', $order->buyer_id)
             ->first();
 
         if (! $exists) {
+
+            $fullName = trim((string) ($order->buyer?->name ?? ''));
+            $email = (string) $order->buyer_email;
+
+            [$first, $last] = $this->splitFullName($fullName, $email);
+
             LeagueParticipant::create([
                 'league_id' => $league->id,
                 'user_id' => $order->buyer_id,
-                'first_name' => $order->buyer?->first_name ?? '—',
-                'last_name' => $order->buyer?->last_name ?? '—',
-                'email' => $order->buyer_email,
+                'first_name' => $first,
+                'last_name' => $last,
+                $email !== '' ? $email : null,
             ]);
         }
     }
+
+    // Fixing Name Stuff
+    private function splitFullName(?string $fullName, ?string $email = null): array
+    {
+        $full = trim(preg_replace('/\s+/', ' ', (string) $fullName));
+
+        if ($full !== '') {
+            $parts = explode(' ', $full);
+            if (count($parts) === 1) {
+                return [$parts[0], ''];
+            }
+            $first = array_shift($parts);
+            $last = implode(' ', $parts);
+
+            return [$first ?: '', $last ?: ''];
+        }
+
+        // Fallback: derive something readable from email local part
+        if ($email) {
+            $local = strstr($email, '@', true) ?: $email;
+            $local = str_replace(['.', '_', '-'], ' ', $local);
+            $local = ucwords(preg_replace('/\s+/', ' ', $local));
+
+            return [$local ?: 'Member', ''];
+        }
+
+        return ['Member', ''];
+    }
+
+    // ---------------------------
+    // Pro subscription fulfillment
+    // ---------------------------
+
+    private function handleSubscriptionUpsert($sub): void
+    {
+        // Find the user by metadata.user_id first (we set this in Checkout),
+        // else by stripe_customer_id = $sub->customer.
+        $user = null;
+
+        $meta = $this->toArray($sub->metadata ?? null);
+        if (! empty($meta['user_id'])) {
+            $user = User::find((int) $meta['user_id']);
+        }
+
+        if (! $user && ! empty($sub->customer)) {
+            $user = User::where('stripe_customer_id', $sub->customer)->first();
+        }
+
+        if (! $user) {
+            // As a last resort, try fetching the customer’s email and find by email
+            try {
+                \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
+                $customer = \Stripe\Customer::retrieve($sub->customer);
+                $email = $customer?->email ?? null;
+                if ($email) {
+                    $user = User::where('email', $email)->first();
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Subscription upsert: unable to fetch Stripe customer', [
+                    'customer' => $sub->customer,
+                    'msg' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if (! $user) {
+            Log::warning('Subscription upsert: user not found for customer', [
+                'customer' => $sub->customer ?? null,
+                'sub' => $sub->id ?? null,
+            ]);
+
+            return;
+        }
+
+        // Update subscription id on user
+        $user->stripe_subscription_id = $sub->id;
+
+        $status = (string) $sub->status;
+        $cancelAtPeriodEnd = (bool) ($sub->cancel_at_period_end ?? false);
+        $currentPeriodEnd = ! empty($sub->current_period_end) ? Carbon::createFromTimestamp($sub->current_period_end) : null;
+        $canceledAt = ! empty($sub->canceled_at) ? Carbon::createFromTimestamp($sub->canceled_at) : null;
+
+        // Decide pro flags
+        if (in_array($status, ['canceled', 'unpaid', 'incomplete_expired'], true)) {
+            // canceled now
+            $user->is_pro = false;
+            $user->pro_expires_at = $canceledAt ?: now();
+        } elseif ($cancelAtPeriodEnd && $currentPeriodEnd) {
+            // scheduled to end at period end
+            $user->is_pro = true;
+            $user->pro_expires_at = $currentPeriodEnd;
+        } elseif (in_array($status, ['active', 'trialing', 'past_due'], true)) {
+            // fully active (or trial). Leave pro_expires_at open.
+            $user->is_pro = true;
+            $user->pro_expires_at = null;
+        } else {
+            // incomplete, unpaid (not canceled yet), etc. → treat as not pro
+            $user->is_pro = false;
+            $user->pro_expires_at = null;
+        }
+
+        $user->save();
+    }
+
+    private function handleSubscriptionDeleted($sub): void
+    {
+        // When Stripe deletes the sub object (after period ends or immediate cancel).
+        $user = User::where('stripe_subscription_id', $sub->id ?? '')->first();
+
+        if (! $user && ! empty($sub->customer)) {
+            $user = User::where('stripe_customer_id', $sub->customer)->first();
+        }
+
+        if (! $user) {
+            Log::warning('Subscription deleted: user not found', [
+                'customer' => $sub->customer ?? null,
+                'sub' => $sub->id ?? null,
+            ]);
+
+            return;
+        }
+
+        $canceledAt = ! empty($sub->canceled_at) ? Carbon::createFromTimestamp($sub->canceled_at) : now();
+
+        $user->is_pro = false;
+        $user->pro_expires_at = $canceledAt;
+        // Keep stripe_subscription_id for history, or null it out if you prefer:
+        // $user->stripe_subscription_id = null;
+        $user->save();
+    }
+
+    private function handleInvoicePaid($invoice): void
+    {
+        // If you ever want to (re)enable Pro on successful renewal, you can do it here.
+        if (empty($invoice->subscription) || empty($invoice->customer)) {
+            return;
+        }
+
+        $user = User::where('stripe_subscription_id', $invoice->subscription)->first();
+        if (! $user) {
+            $user = User::where('stripe_customer_id', $invoice->customer)->first();
+        }
+        if (! $user) {
+            return;
+        }
+
+        // On successful payment, mark Pro active and clear scheduled expiry (unless cancel_at_period_end is set).
+        try {
+            \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
+            $sub = \Stripe\Subscription::retrieve($invoice->subscription);
+
+            $cancelAtPeriodEnd = (bool) ($sub->cancel_at_period_end ?? false);
+            $currentPeriodEnd = ! empty($sub->current_period_end) ? Carbon::createFromTimestamp($sub->current_period_end) : null;
+
+            if ($cancelAtPeriodEnd && $currentPeriodEnd) {
+                $user->is_pro = true;
+                $user->pro_expires_at = $currentPeriodEnd;
+            } else {
+                $user->is_pro = true;
+                $user->pro_expires_at = null;
+            }
+            $user->save();
+        } catch (\Throwable $e) {
+            Log::warning('Invoice paid: unable to fetch subscription', [
+                'subscription' => $invoice->subscription,
+                'msg' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    // ---------------------------
+    // Utils
+    // ---------------------------
 
     private function toArray($stripeObject): array
     {
