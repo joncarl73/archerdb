@@ -42,4 +42,9 @@ class LeagueWeekEnd extends Model
 
         $parent?->recalcTotals();
     }
+
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
+    }
 }

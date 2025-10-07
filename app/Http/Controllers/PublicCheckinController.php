@@ -53,7 +53,10 @@ class PublicCheckinController extends Controller
 
         $p = \App\Models\LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
 
-        $weeks = \App\Models\LeagueWeek::where('league_id', $league->id)
+        $event = $league->event ?? null;
+
+        $weeks = \App\Models\LeagueWeek::query()
+            ->forContext($event, $league)
             ->orderBy('week_number')
             ->get(['id', 'week_number', 'date']);
 
@@ -89,7 +92,15 @@ class PublicCheckinController extends Controller
         $request->validate([
             'week_number' => [
                 'required', 'integer', 'between:1,'.$league->length_weeks,
-                Rule::exists('league_weeks', 'week_number')->where('league_id', $league->id),
+                Rule::exists('league_weeks', 'week_number')->where(function ($q) use ($league) {
+                    $event = $league->event ?? null;
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('league_weeks', 'event_id') && $event) {
+                        $q->where('event_id', $event->id);
+                    } else {
+                        $q->where('league_id', $league->id);
+                    }
+                }),
+
             ],
             'lane' => ['required', 'string', 'max:10'],
         ]);
@@ -190,7 +201,8 @@ class PublicCheckinController extends Controller
 
     public function week(League $league, string $participant)
     {
-        $weeks = $league->weeks()->orderBy('week_number')->get();
+        $event = $league->event ?? null;
+        $weeks = \App\Models\LeagueWeek::query()->forContext($event, $league)->orderBy('week_number')->get();
         $laneOptions = $league->laneOptions();
 
         return view('public.leagues.checkin.week', [

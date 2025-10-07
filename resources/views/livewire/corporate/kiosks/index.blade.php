@@ -134,8 +134,11 @@ new class extends Component
 
     public function updatedWeekNumber(): void
     {
-        $exists = LeagueWeek::where('league_id', $this->league->id)
-            ->where('week_number', $this->week_number)->exists();
+        $event = $this->league->event ?? null;
+        $exists = \App\Models\LeagueWeek::query()
+            ->forContext($event, $this->league)
+            ->where('week_number', $this->week_number)
+            ->exists();
 
         if (! $exists) {
             $this->addError('week_number', 'Selected week does not exist for this league.');

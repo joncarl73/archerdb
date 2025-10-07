@@ -39,8 +39,10 @@ class PublicScoringController extends Controller
         $participant = $checkin->participant;
 
         // Use the week selected at check-in (authoritative for makeups)
+        $event = $league->event ?? null;
+
         $week = LeagueWeek::query()
-            ->where('league_id', $league->id)
+            ->forContext($event, $league)
             ->where('week_number', $checkin->week_number)
             ->firstOrFail();
 

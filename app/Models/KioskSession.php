@@ -23,4 +23,9 @@ class KioskSession extends Model
     {
         return $this->belongsTo(League::class);
     }
+
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
+    }
 }

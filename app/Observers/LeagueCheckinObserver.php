@@ -4,7 +4,6 @@ namespace App\Observers;
 
 use App\Models\League;
 use App\Models\LeagueCheckin;
-use App\Models\LeagueWeek;
 use App\Models\LeagueWeekScore;
 
 class LeagueCheckinObserver
@@ -17,7 +16,14 @@ class LeagueCheckinObserver
             return;
         }
 
-        $week = LeagueWeek::where('league_id', $lc->league_id)
+        $league = \App\Models\League::find($lc->league_id);
+        $event = null;
+        if (\Illuminate\Support\Facades\Schema::hasColumn('league_checkins', 'event_id') && ! empty($lc->event_id)) {
+            $event = \App\Models\Event::find($lc->event_id);
+        }
+
+        $week = \App\Models\LeagueWeek::query()
+            ->forContext($event, $league)
             ->where('week_number', $lc->week_number)
             ->first();
 
@@ -36,6 +42,7 @@ class LeagueCheckinObserver
                 'league_id' => (int) $lc->league_id,
                 'league_week_id' => (int) $week->id,
                 'league_participant_id' => (int) $lc->participant_id,
+                'event_id' => $event?->id,
             ],
             [
                 'arrows_per_end' => (int) ($league->arrows_per_end ?? 3),

@@ -20,4 +20,24 @@ class LeagueParticipant extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
+    }
+
+    public function division()
+    {
+        return $this->belongsTo(\App\Models\EventDivision::class, 'event_division_id');
+    }
+
+    public function preferredLineTime()
+    {
+        return $this->belongsTo(\App\Models\EventLineTime::class, 'preferred_line_time_id');
+    }
+
+    public function assignedLineTime()
+    {
+        return $this->belongsTo(\App\Models\EventLineTime::class, 'assigned_line_time_id');
+    }
 }

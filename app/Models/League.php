@@ -113,4 +113,14 @@ class League extends Model
     {
         return $this->hasOne(\App\Models\LeagueInfo::class);
     }
+
+    public function kioskSessions()
+    {
+        return $this->hasMany(\App\Models\KioskSession::class);
+    }
+
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
+    }
 }

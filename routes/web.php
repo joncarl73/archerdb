@@ -7,6 +7,7 @@ use App\Http\Controllers\ManageProPortalController;
 use App\Http\Controllers\ProLandingController;
 use App\Http\Controllers\ProReturnController;
 use App\Http\Controllers\PublicCheckinController;
+use App\Http\Controllers\PublicEventInfoController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
@@ -106,6 +107,9 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
             ->name('leagues.info.edit')
             ->whereNumber('league');
+        Volt::route('events/{event}/info', 'corporate.events.info-editor')
+            ->name('events.info.edit')
+            ->whereNumber('event');
 
         // CSV template download
         Route::get('leagues/{league}/participants/template.csv', function (League $league) {
@@ -199,6 +203,9 @@ Route::prefix('l/{uuid}')->group(function () {
     Route::get('/info', [PublicLeagueInfoController::class, 'show'])
         ->name('public.league.info');
 });
+
+// Event Routes
+Route::get('/e/{uuid}', [PublicEventInfoController::class, 'show'])->name('public.event.info');
 
 /**
  * NEW: Public kiosk tablet routes (unguarded, tokenized)

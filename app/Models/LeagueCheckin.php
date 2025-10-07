@@ -33,4 +33,9 @@ class LeagueCheckin extends Model
         // foreign key column is participant_id on this table
         return $this->belongsTo(LeagueParticipant::class, 'participant_id');
     }
+
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
+    }
 }
