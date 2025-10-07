@@ -1,10 +1,16 @@
 @php
-  // Gate kiosk UI strictly by league settings + timing.
-  $isLeagueNight     = (int)\Carbon\Carbon::now(config('app.timezone'))->dayOfWeek === (int)$league->day_of_week;
-  $isTabletMode      = ($league->scoring_mode === 'tablet');
+  // Kiosk return control: show whenever kiosk flags are set (works for multi-day, single-day, etc.)
+  $showKioskControls = !empty($kioskMode) && !empty($kioskReturnTo);
 
-  // Final flag: show kiosk-only controls (e.g., "Back to kiosk") iff ALL are true.
-  $showKioskControls = $isTabletMode && $isLeagueNight && !empty($kioskMode) && !empty($kioskReturnTo);
+  // Optional meta for header (safe, avoids extra queries if relations not eager-loaded)
+  $participant = $score->relationLoaded('participant') ? $score->participant : null;
+
+  $assignedLineTime = null;
+  if ($participant instanceof \Illuminate\Database\Eloquent\Model) {
+      $assignedLineTime = $participant->relationLoaded('assignedLineTime')
+          ? $participant->assignedLineTime
+          : null; // avoid extra DB calls in the view; show only if eager-loaded
+  }
 @endphp
 
 <section class="w-full mb-5">
@@ -12,27 +18,47 @@
   <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
     <div class="sm:flex sm:items-center">
       <div class="sm:flex-auto">
-        <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">League scoring</h1>
+        <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">Scoring</h1>
+
         <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
-          Week #{{ $score->week?->week_number ?? '—' }} •
+          {{-- Week/meta --}}
+          @if($score->relationLoaded('week') && $score->week)
+            Week #{{ $score->week->week_number }} •
+          @endif
+
           {{ $score->arrows_per_end }} arrows/end • up to {{ $score->max_score }} points/arrow
           @if(($score->x_value ?? 10) > $score->max_score)
             (X={{ $score->x_value }})
           @endif
         </p>
+
+        {{-- Optional: Archer + assigned line/lane (only if available) --}}
+        @if($participant || $assignedLineTime || (!empty($participant?->assigned_lane_number)))
+          <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            @if($participant)
+              Archer: {{ trim(($participant->first_name ?? '').' '.($participant->last_name ?? '')) }}
+            @endif
+            @if($assignedLineTime)
+              • Line: {{ $assignedLineTime->label
+                  ?? optional($assignedLineTime->starts_at)->timezone(config('app.timezone'))?->format('Y-m-d H:i') }}
+            @endif
+            @if(!empty($participant?->assigned_lane_number))
+              • Lane: {{ $participant->assigned_lane_number }}{{ $participant->assigned_lane_slot }}
+            @endif
+          </p>
+        @endif
       </div>
 
       <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
         @if($showKioskControls)
-          {{-- Tablet mode + league night + kiosk context => go back to lane board --}}
+          {{-- Kiosk context => go back to the lane board --}}
           <flux:button as="a" variant="primary" href="{{ $kioskReturnTo }}">
             Back to kiosk
           </flux:button>
         @else
-          {{-- Personal-device flow: finish this score and go to summary (or your scoring grid if different) --}}
+          {{-- Personal-device flow: finish this score and go to summary --}}
           <flux:button as="a" variant="primary"
             href="{{ route('public.scoring.summary', [$league->public_uuid, $score->id]) }}">
-            {{-- If your "scoring grid" is a different route, replace the route() above. --}}
             End scoring
           </flux:button>
         @endif
@@ -173,7 +199,7 @@
                   <button
                     type="button"
                     wire:click="startEntry({{ $selectedEnd }}, {{ $i }})"
-                    class="inline-flex h-12 w-12 sm:h-9 sm:w-9 items-center justify-center rounded-md inset-ring inset-ring-zinc-200 dark:inset-ring-white/10 hover:bg-zinc-50 dark:hover:bg:white/5
+                    class="inline-flex h-12 w-12 sm:h-9 sm:w-9 items-center justify-center rounded-md inset-ring inset-ring-zinc-200 dark:inset-ring-white/10 hover:bg-zinc-50 dark:hover:bg-white/5
                            @if($selectedArrow === $i) ring-2 ring-indigo-500 @endif"
                     aria-pressed="{{ $selectedArrow === $i ? 'true' : 'false' }}"
                     aria-label="Select arrow {{ $i + 1 }}"

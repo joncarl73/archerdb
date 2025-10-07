@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LeagueWeekEnd extends Model
 {
-    protected $fillable = ['league_week_score_id', 'end_number', 'scores', 'end_score', 'x_count'];
+    protected $fillable = ['league_week_score_id', 'end_number', 'scores', 'end_score', 'x_count', 'event_id'];
 
     protected $casts = ['scores' => 'array'];
 

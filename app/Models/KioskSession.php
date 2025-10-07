@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 class KioskSession extends Model
 {
     protected $fillable = [
-        'league_id', 'week_number', 'lanes', 'token', 'is_active', 'created_by', 'expires_at', 'participants',
+        'league_id', 'week_number', 'lanes', 'token', 'is_active', 'created_by', 'expires_at', 'participants', 'event_id', 'event_line_time_id',
     ];
 
     protected $casts = [
@@ -27,5 +27,10 @@ class KioskSession extends Model
     public function event()
     {
         return $this->belongsTo(\App\Models\Event::class);
+    }
+
+    public function lineTime()
+    {
+        return $this->belongsTo(\App\Models\EventLineTime::class, 'event_line_time_id');
     }
 }

@@ -56,6 +56,10 @@ Route::middleware(['auth', 'profile.completed'])->group(function () {
     Route::post('/checkout/leagues/{league:public_uuid}/start', StartLeagueCheckoutController::class)
         ->name('checkout.league.start');
 
+    Route::post('/checkout/event/{uuid}', \App\Http\Controllers\StartEventCheckoutController::class)
+        ->middleware('auth')
+        ->name('checkout.start.event');
+
     // After Stripe redirects back (informational — fulfillment happens via webhook)
     Route::get('/checkout/return', CheckoutReturnController::class)
         ->name('checkout.return');

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema; // ⬅️ for hasColumn()
 use Throwable;
 
 class PublicScoringController extends Controller
@@ -47,12 +48,18 @@ class PublicScoringController extends Controller
             ->firstOrFail();
 
         // find or create the week score
+        // ⬇️ Include event_id in the natural key when the column exists
+        $where = [
+            'league_id' => $league->id,
+            'league_week_id' => $week->id,
+            'league_participant_id' => $participant->id,
+        ];
+        if ($event && Schema::hasColumn('league_week_scores', 'event_id')) {
+            $where['event_id'] = $event->id;
+        }
+
         $score = LeagueWeekScore::firstOrCreate(
-            [
-                'league_id' => $league->id,
-                'league_week_id' => $week->id,
-                'league_participant_id' => $participant->id,
-            ],
+            $where,
             [
                 'arrows_per_end' => (int) ($league->arrows_per_end ?? 3),
                 'ends_planned' => (int) ($league->ends_per_day ?? 10),

@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LeagueParticipant extends Model
 {
-    protected $fillable = ['league_id', 'user_id', 'first_name', 'last_name', 'email', 'checked_in'];
+    protected $fillable = ['league_id', 'user_id', 'first_name', 'last_name', 'email', 'checked_in', 'event_division_id', 'preferred_line_time_id', 'assigned_line_time_id', 'assigned_lane', 'assigned_slot'];
 
     protected $casts = ['checked_in' => 'bool'];
 

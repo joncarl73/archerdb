@@ -155,9 +155,12 @@ class PublicCheckinController extends Controller
                 ]);
         }
 
+        $eventId = $league->event_id;
+
         // New check-in
         $checkin = LeagueCheckin::create([
             'league_id' => $league->id,
+            'event_id' => $eventId,
             'participant_id' => $p->id,
             'participant_name' => trim($p->first_name.' '.$p->last_name),
             'participant_email' => $p->email ?: null,

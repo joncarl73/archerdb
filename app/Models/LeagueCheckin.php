@@ -16,6 +16,7 @@ class LeagueCheckin extends Model
         'lane_number',
         'lane_slot',
         'checked_in_at',
+        'event_id',
     ];
 
     protected $casts = [

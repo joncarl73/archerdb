@@ -9,6 +9,7 @@ use App\Models\LeagueCheckin;
 use App\Models\LeagueWeekEnd;
 use App\Models\LeagueWeekScore;
 use App\Observers\LeagueCheckinObserver;
+use App\Observers\LeagueObserver;
 use App\Observers\LeagueWeekEndObserver;
 use App\Observers\LeagueWeekScoreObserver;
 use App\Policies\LeaguePolicy;
@@ -79,5 +80,6 @@ class AppServiceProvider extends ServiceProvider
         LeagueWeekEnd::observe(LeagueWeekEndObserver::class);
         LeagueCheckin::observe(LeagueCheckinObserver::class);
         LeagueWeekScore::observe(LeagueWeekScoreObserver::class);
+        League::observe(LeagueObserver::class);
     }
 }
