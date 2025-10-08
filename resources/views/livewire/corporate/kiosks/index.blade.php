@@ -40,8 +40,6 @@ new class extends Component
 
     public ?string $qrUrl = null;
 
-    public ?int $event_line_time_id = null;
-
     public function openQr(string $token): void
     {
         $this->qrUrl = url('/k/'.$token);
@@ -136,11 +134,8 @@ new class extends Component
 
     public function updatedWeekNumber(): void
     {
-        $event = $this->league->event ?? null;
-        $exists = \App\Models\LeagueWeek::query()
-            ->forContext($event, $this->league)
-            ->where('week_number', $this->week_number)
-            ->exists();
+        $exists = LeagueWeek::where('league_id', $this->league->id)
+            ->where('week_number', $this->week_number)->exists();
 
         if (! $exists) {
             $this->addError('week_number', 'Selected week does not exist for this league.');
@@ -186,12 +181,10 @@ new class extends Component
         }
 
         $session = KioskSession::create([
-            'event_id' => optional($this->league->event)->id,           // NEW
-            'event_line_time_id' => $this->event_line_time_id ?? null,            // NEW (nullable)
             'league_id' => $this->league->id,
             'week_number' => $this->week_number,
             'participants' => array_values(array_unique(array_map('intval', $this->participantIds))),
-            'lanes' => array_values($this->lanes ?? []),             // keep legacy if you still support it
+            'lanes' => [], // legacy
             'token' => Str::random(40),
             'is_active' => true,
             'created_by' => auth()->id(),
@@ -221,20 +214,6 @@ new class extends Component
         $this->createdToken = null;
 
         $this->dispatch('toast', type: 'success', message: 'Kiosk session deleted.');
-    }
-
-    protected function rules()
-    {
-        $hasEventLineTimes = (bool) optional($this->league->event)->lineTimes()->exists();
-
-        return [
-            'week_number' => ['required', 'integer', 'between:1,'.$this->league->length_weeks],
-            'participantIds' => ['array'],
-            'participantIds.*' => ['integer'],
-            'lanes' => ['array'],
-            'lanes.*' => ['string', 'max:10'],
-            'event_line_time_id' => [$hasEventLineTimes ? 'required' : 'nullable', 'integer', 'exists:event_line_times,id'],
-        ];
     }
 };
 ?>

@@ -96,7 +96,7 @@ new class extends Component
 
             $sellerId = $seller->id;
             $sellerStripe = $seller->stripe_account_id;
-            $feeBps = (int) ($seller->default_platform_fee_bps ?? config('payments.default_platform_fee_bps', 250));
+            $feeBps = (int) ($seller->default_platform_fee_bps ?? config('payments.default_platform_fee_bps', 500));
         } else {
             // Admin/internal: platform seller, 0 bps (platform keeps full)
             $sellerId = $this->getPlatformSellerId();

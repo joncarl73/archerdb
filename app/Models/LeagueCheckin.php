@@ -16,7 +16,6 @@ class LeagueCheckin extends Model
         'lane_number',
         'lane_slot',
         'checked_in_at',
-        'event_id',
     ];
 
     protected $casts = [
@@ -33,10 +32,5 @@ class LeagueCheckin extends Model
     {
         // foreign key column is participant_id on this table
         return $this->belongsTo(LeagueParticipant::class, 'participant_id');
-    }
-
-    public function event()
-    {
-        return $this->belongsTo(\App\Models\Event::class);
     }
 }

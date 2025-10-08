@@ -3,19 +3,14 @@
 namespace App\Providers;
 
 use App\Enums\UserRole;
-use App\Models\Event;
 use App\Models\League;
 use App\Models\LeagueCheckin;
-use App\Models\LeagueParticipant;
 use App\Models\LeagueWeekEnd;
 use App\Models\LeagueWeekScore;
 use App\Observers\LeagueCheckinObserver;
-use App\Observers\LeagueObserver;
-use App\Observers\LeagueParticipantObserver;
 use App\Observers\LeagueWeekEndObserver;
 use App\Observers\LeagueWeekScoreObserver;
 use App\Policies\LeaguePolicy;
-use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Gate;
@@ -36,53 +31,26 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // -------- Blade directives --------
+        // Blade directive for corporate/admin-only content
         Blade::if('corporate', function () {
             $u = Auth::user();
 
             return $u && in_array($u->role, [UserRole::Administrator, UserRole::Corporate], true);
         });
 
+        // Blade directive for admin-only content
         Blade::if('admin', function () {
             $u = Auth::user();
 
             return $u && $u->role === UserRole::Administrator;
         });
 
-        Blade::if('pro', function () {
-            $u = Auth::user();
-
-            return $u && $u->isPro();
-        });
-
-        // -------- Policies --------
+        // Policy mapping for League
         Gate::policy(League::class, LeaguePolicy::class);
-        // If you add an EventPolicy later, this will wire itself up safely:
-        if (class_exists(\App\Policies\EventPolicy::class)) {
-            Gate::policy(Event::class, \App\Policies\EventPolicy::class);
-        }
 
-        // -------- Eloquent morph map (for Product.productable etc.) --------
-        // Use short aliases so new rows store 'league' / 'event' instead of FQCNs.
-        // We intentionally use morphMap (NOT enforceMorphMap) to remain compatible
-        // with any historical rows that still store the FQCN.
-        Relation::morphMap([
-            'league' => \App\Models\League::class,
-            'event' => \App\Models\Event::class,
-            // add other polymorphic types here if you have them
-        ]);
-
-        // If/when all historical rows are migrated to aliases, you can switch to:
-        // Relation::enforceMorphMap([
-        //     'league' => \App\Models\League::class,
-        //     'event'  => \App\Models\Event::class,
-        // ]);
-
-        // -------- Observers --------
+        // Observers
         LeagueWeekEnd::observe(LeagueWeekEndObserver::class);
         LeagueCheckin::observe(LeagueCheckinObserver::class);
         LeagueWeekScore::observe(LeagueWeekScoreObserver::class);
-        LeagueParticipant::observe(LeagueParticipantObserver::class);
-        League::observe(LeagueObserver::class);
     }
 }

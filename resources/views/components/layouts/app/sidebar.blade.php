@@ -64,34 +64,7 @@
                     {{ __('Training') }}
                     </flux:navlist.item>
 
-                    @pro
-                        <flux:navlist.item icon="identification"
-                            :href="route('pro.landing')"
-                            :current="request()->routeIs('pro.landing')"
-                            wire:navigate>
-                        {{ __('Manage Pro') }}
-                        </flux:navlist.item>
-                    @else
-                        <flux:navlist.item icon="bolt"
-                            :href="route('pro.landing')"
-                            :current="request()->routeIs('pro.landing')"
-                            wire:navigate>
-                        {{ __('Upgrade To Pro') }}
-                        </flux:navlist.item>
-                    @endpro
-
                 </flux:navlist.group>
-
-                @pro
-                    <flux:navlist.group heading="Pro" class="grid mt-2">
-                        <flux:navlist.item icon="identification"
-                            :href="route('pro.landing')"
-                            :current="request()->routeIs('pro.landing')"
-                            wire:navigate>
-                            {{ __('Pro Stuff Here') }}
-                        </flux:navlist.item>
-                    </flux:navlist.group>
-                @endpro
 
                 @corporate
                     <flux:navlist.group heading="Corporate" class="grid mt-2">
@@ -102,12 +75,6 @@
                         {{ __('Leagues') }}
                         </flux:navlist.item>
 
-                        <flux:navlist.item icon="trophy"
-                            :href="route('corporate.events.index')"
-                            :current="request()->routeIs('corporate.events.index')"
-                            wire:navigate>
-                        {{ __('Events') }}
-                        </flux:navlist.item>
 
                         @if (!$seller || !$seller->stripe_account_id)
                             <flux:navlist.item icon="credit-card" :href="route('payments.connect.start')">

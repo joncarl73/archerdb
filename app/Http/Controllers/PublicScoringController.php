@@ -12,7 +12,6 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Schema; // ⬅️ for hasColumn()
 use Throwable;
 
 class PublicScoringController extends Controller
@@ -40,26 +39,18 @@ class PublicScoringController extends Controller
         $participant = $checkin->participant;
 
         // Use the week selected at check-in (authoritative for makeups)
-        $event = $league->event ?? null;
-
         $week = LeagueWeek::query()
-            ->forContext($event, $league)
+            ->where('league_id', $league->id)
             ->where('week_number', $checkin->week_number)
             ->firstOrFail();
 
         // find or create the week score
-        // ⬇️ Include event_id in the natural key when the column exists
-        $where = [
-            'league_id' => $league->id,
-            'league_week_id' => $week->id,
-            'league_participant_id' => $participant->id,
-        ];
-        if ($event && Schema::hasColumn('league_week_scores', 'event_id')) {
-            $where['event_id'] = $event->id;
-        }
-
         $score = LeagueWeekScore::firstOrCreate(
-            $where,
+            [
+                'league_id' => $league->id,
+                'league_week_id' => $week->id,
+                'league_participant_id' => $participant->id,
+            ],
             [
                 'arrows_per_end' => (int) ($league->arrows_per_end ?? 3),
                 'ends_planned' => (int) ($league->ends_per_day ?? 10),
@@ -77,7 +68,6 @@ class PublicScoringController extends Controller
                     'scores' => array_fill(0, $score->arrows_per_end, null),
                     'end_score' => 0,
                     'x_count' => 0,
-                    'event_id' => $score->event_id ?: optional($score->league)->event_id,
                 ]);
             }
         }

@@ -3,21 +3,15 @@
 // ← NEW
 use App\Http\Controllers\CheckoutReturnController;
 use App\Http\Controllers\LeagueQrController;
-use App\Http\Controllers\ManageProPortalController;
-use App\Http\Controllers\ProLandingController;
-use App\Http\Controllers\ProReturnController;
 use App\Http\Controllers\PublicCheckinController;
-use App\Http\Controllers\PublicEventInfoController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
 use App\Http\Controllers\StartConnectForCurrentSellerController;
 use App\Http\Controllers\StartLeagueCheckoutController;
-use App\Http\Controllers\StartProCheckoutController;
 use App\Http\Controllers\StripeReturnController;
 use App\Http\Controllers\StripeWebhookController;
-use App\Models\Event;
-use App\Models\League; // ← NEW (for route model binding in corporate event pages)
+use App\Models\League;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
@@ -57,19 +51,9 @@ Route::middleware(['auth', 'profile.completed'])->group(function () {
     Route::post('/checkout/leagues/{league:public_uuid}/start', StartLeagueCheckoutController::class)
         ->name('checkout.league.start');
 
-    Route::post('/checkout/event/{uuid}', \App\Http\Controllers\StartEventCheckoutController::class)
-        ->middleware('auth')
-        ->name('checkout.start.event');
-
     // After Stripe redirects back (informational — fulfillment happens via webhook)
     Route::get('/checkout/return', CheckoutReturnController::class)
         ->name('checkout.return');
-
-    // Pro routes
-    Route::get('/pro', ProLandingController::class)->name('pro.landing');
-    Route::post('/pro/checkout', StartProCheckoutController::class)->name('pro.checkout.start');
-    Route::get('/pro/return', ProReturnController::class)->name('pro.return');
-    Route::get('/pro/manage', ManageProPortalController::class)->name('pro.manage');
 });
 
 // Onboarding Routes
@@ -99,7 +83,7 @@ Route::middleware(['auth'])->group(function () {
     })->name('impersonate.stop');
 });
 
-// Corporate, League and Event
+// League Routes
 Route::middleware(['auth', 'profile.completed', 'corporate'])
     ->prefix('corporate')
     ->name('corporate.')
@@ -112,39 +96,6 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
             ->name('leagues.info.edit')
             ->whereNumber('league');
-
-        // Event Info editor (already present)
-        Volt::route('events/{event}/info', 'corporate.events.info-editor')
-            ->name('events.info.edit')
-            ->whereNumber('event');
-
-        // --- NEW: Event management pages (modeled after legacy league screens) ---
-        Volt::route('event', 'corporate.events.index')
-            ->name('events.index');
-
-        Volt::route('events/new', 'corporate.events.create')
-            ->name('events.create');
-
-        // Show Page
-        Volt::route('events/{event}', 'corporate.events.show')
-            ->name('events.show')
-            ->whereNumber('event');
-
-        // Divisions
-        Volt::route('events/{event}/divisions', 'corporate.events.divisions')
-            ->name('events.divisions')
-            ->whereNumber('event');
-
-        // Line times
-        Volt::route('events/{event}/line-times', 'corporate.events.line-times')
-            ->name('events.line_times')
-            ->whereNumber('event');
-
-        // Lane map
-        Volt::route('events/{event}/lane-map', 'corporate.events.lane-map')
-            ->name('events.lane_map')
-            ->whereNumber('event');
-        // --- END NEW ---
 
         // CSV template download
         Route::get('leagues/{league}/participants/template.csv', function (League $league) {
@@ -238,9 +189,6 @@ Route::prefix('l/{uuid}')->group(function () {
     Route::get('/info', [PublicLeagueInfoController::class, 'show'])
         ->name('public.league.info');
 });
-
-// Event Routes
-Route::get('/e/{uuid}', [PublicEventInfoController::class, 'show'])->name('public.event.info');
 
 /**
  * NEW: Public kiosk tablet routes (unguarded, tokenized)

@@ -38,6 +38,5 @@ return [
         'secret' => env('STRIPE_SECRET'),
         'public' => env('STRIPE_PUBLIC'),
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
-        'pro_price_id' => env('STRIPE_PRO_PRICE_ID'),
     ],
 ];

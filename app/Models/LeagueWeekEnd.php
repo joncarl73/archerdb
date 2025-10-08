@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LeagueWeekEnd extends Model
 {
-    protected $fillable = ['league_week_score_id', 'end_number', 'scores', 'end_score', 'x_count', 'event_id'];
+    protected $fillable = ['league_week_score_id', 'end_number', 'scores', 'end_score', 'x_count'];
 
     protected $casts = ['scores' => 'array'];
 
@@ -41,10 +41,5 @@ class LeagueWeekEnd extends Model
         ])->save();
 
         $parent?->recalcTotals();
-    }
-
-    public function event()
-    {
-        return $this->belongsTo(\App\Models\Event::class);
     }
 }

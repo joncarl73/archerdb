@@ -9,11 +9,9 @@
     // Resolve the selected week's scheduled date (if week number is present)
     $weekRow = null;
     if (!empty($week)) {
-        $event = $league->event ?? null;
-        $weekRow = \App\Models\LeagueWeek::query()
-            ->forContext($event, $league)
-            ->where('week_number', (int) $week)
-            ->first();
+        $weekRow = \App\Models\LeagueWeek::where('league_id', $league->id)
+                    ->where('week_number', (int) $week)
+                    ->first();
     }
     $today    = \Illuminate\Support\Carbon::today();
     $weekDate = $weekRow ? \Illuminate\Support\Carbon::parse($weekRow->date) : null;

@@ -13,7 +13,7 @@ class LeagueWeekScore extends Model
     protected $fillable = [
         'league_id', 'league_week_id', 'league_participant_id',
         'arrows_per_end', 'ends_planned', 'max_score', 'x_value',
-        'total_score', 'x_count', 'event_id',
+        'total_score', 'x_count',
     ];
 
     public function league(): BelongsTo
@@ -86,10 +86,5 @@ class LeagueWeekScore extends Model
             'nines' => (int) $nines,
             'score' => (int) $this->total_score,
         ];
-    }
-
-    public function event()
-    {
-        return $this->belongsTo(\App\Models\Event::class);
     }
 }
