@@ -125,9 +125,9 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         Volt::route('events/new', 'corporate.events.create')
             ->name('events.create');
 
-        // Basics (edit)
-        Volt::route('events/{event}/basics', 'corporate.events.basics')
-            ->name('events.basics')
+        // Show Page
+        Volt::route('events/{event}', 'corporate.events.show')
+            ->name('events.show')
             ->whereNumber('event');
 
         // Divisions

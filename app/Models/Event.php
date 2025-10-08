@@ -4,16 +4,18 @@ namespace App\Models;
 
 use App\Enums\EventKind;
 use App\Enums\EventScoringMode;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Str;
 
 class Event extends Model
 {
     use SoftDeletes;
 
     protected $fillable = [
-        'public_uuid', 'owner_id', 'title', 'kind', 'scoring_mode', 'is_published', 'starts_on', 'ends_on',
+        'public_uuid', 'owner_id', 'title', 'kind', 'scoring_mode', 'is_published', 'starts_on', 'ends_on', 'location',
     ];
 
     protected $casts = [
@@ -23,6 +25,18 @@ class Event extends Model
         'kind' => EventKind::class,
         'scoring_mode' => EventScoringMode::class,
     ];
+
+    /**
+     * Ensure a public_uuid is always present.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (Event $event) {
+            if (empty($event->public_uuid)) {
+                $event->public_uuid = (string) Str::uuid(); // or Str::uuid()
+            }
+        });
+    }
 
     public function league(): HasOne
     {
@@ -101,7 +115,6 @@ class Event extends Model
 
     public function isKioskLike(): bool
     {
-        // Treat either label as kiosk-style
         return in_array($this->scoring_mode, ['kiosk', 'tablet'], true);
     }
 
@@ -120,6 +133,5 @@ class Event extends Model
         $sm = $this->scoring_mode instanceof \UnitEnum ? $this->scoring_mode->value : (string) $this->scoring_mode;
 
         return $sm === 'kiosk' ? 'Kiosk/Tablet' : 'Personal Device';
-        // use in blade as: {{ $event->scoring_mode_label }}
     }
 }
