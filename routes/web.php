@@ -16,7 +16,8 @@ use App\Http\Controllers\StartLeagueCheckoutController;
 use App\Http\Controllers\StartProCheckoutController;
 use App\Http\Controllers\StripeReturnController;
 use App\Http\Controllers\StripeWebhookController;
-use App\Models\League;
+use App\Models\Event;
+use App\Models\League; // ← NEW (for route model binding in corporate event pages)
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
@@ -98,7 +99,7 @@ Route::middleware(['auth'])->group(function () {
     })->name('impersonate.stop');
 });
 
-// League Routes
+// Corporate, League and Event
 Route::middleware(['auth', 'profile.completed', 'corporate'])
     ->prefix('corporate')
     ->name('corporate.')
@@ -111,9 +112,39 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
         Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
             ->name('leagues.info.edit')
             ->whereNumber('league');
+
+        // Event Info editor (already present)
         Volt::route('events/{event}/info', 'corporate.events.info-editor')
             ->name('events.info.edit')
             ->whereNumber('event');
+
+        // --- NEW: Event management pages (modeled after legacy league screens) ---
+        Volt::route('event', 'corporate.events.index')
+            ->name('events.index');
+
+        Volt::route('events/new', 'corporate.events.create')
+            ->name('events.create');
+
+        // Basics (edit)
+        Volt::route('events/{event}/basics', 'corporate.events.basics')
+            ->name('events.basics')
+            ->whereNumber('event');
+
+        // Divisions
+        Volt::route('events/{event}/divisions', 'corporate.events.divisions')
+            ->name('events.divisions')
+            ->whereNumber('event');
+
+        // Line times
+        Volt::route('events/{event}/line-times', 'corporate.events.line-times')
+            ->name('events.line_times')
+            ->whereNumber('event');
+
+        // Lane map
+        Volt::route('events/{event}/lane-map', 'corporate.events.lane-map')
+            ->name('events.lane_map')
+            ->whereNumber('event');
+        // --- END NEW ---
 
         // CSV template download
         Route::get('leagues/{league}/participants/template.csv', function (League $league) {

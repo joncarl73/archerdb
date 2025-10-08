@@ -102,6 +102,12 @@
                         {{ __('Leagues') }}
                         </flux:navlist.item>
 
+                        <flux:navlist.item icon="trophy"
+                            :href="route('corporate.events.index')"
+                            :current="request()->routeIs('corporate.events.index')"
+                            wire:navigate>
+                        {{ __('Events') }}
+                        </flux:navlist.item>
 
                         @if (!$seller || !$seller->stripe_account_id)
                             <flux:navlist.item icon="credit-card" :href="route('payments.connect.start')">

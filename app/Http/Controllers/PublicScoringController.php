@@ -77,6 +77,7 @@ class PublicScoringController extends Controller
                     'scores' => array_fill(0, $score->arrows_per_end, null),
                     'end_score' => 0,
                     'x_count' => 0,
+                    'event_id' => $score->event_id ?: optional($score->league)->event_id,
                 ]);
             }
         }

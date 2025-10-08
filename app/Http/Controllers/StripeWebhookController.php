@@ -63,7 +63,7 @@ class StripeWebhookController extends Controller
 
                 // ---- Subscriptions for Pro ----
             case 'customer.subscription.created':
-                $this->handleSubscriptionUpsert($obj); // treat like updated
+                $this->handleSubscriptionUpsert($obj);
                 break;
 
             case 'customer.subscription.updated':
@@ -116,7 +116,7 @@ class StripeWebhookController extends Controller
                 'metadata' => $this->toArray($session->metadata ?? null),
             ]);
 
-            // If this was a Pro subscription checkout, it’s fine (handled by subscription events).
+            // For subscriptions, fulfillment happens in subscription events.
             return;
         }
 
@@ -134,7 +134,6 @@ class StripeWebhookController extends Controller
     private function handlePiSucceeded($pi, ?string $acct): void
     {
         // This PI can fire for both orders and subscriptions.
-        // Orders carry metadata.order_id from our checkout; subscription PIs often don't.
         $meta = $this->toArray($pi->metadata ?? null);
         $order = null;
 
@@ -187,9 +186,10 @@ class StripeWebhookController extends Controller
             $opts['stripe_account'] = $acct;
         }
 
-        // Idempotency: if already paid, just ensure charge/transfer are synced and return
+        // Idempotency: already paid with same PI → just sync charge/transfer and fulfill
         if ($order->status === \App\Models\Order::STATUS_PAID && $order->stripe_payment_intent_id === $piId) {
             $this->syncChargeAndTransfer($order, $piId, $opts);
+            $this->fulfillOrder($order);
 
             return;
         }
@@ -246,7 +246,7 @@ class StripeWebhookController extends Controller
         }
     }
 
-    /** New: fulfillment for both leagues and events */
+    /** Fulfillment for both leagues and standalone events */
     private function fulfillOrder(Order $order): void
     {
         $item = $order->items()->first();
@@ -260,14 +260,14 @@ class StripeWebhookController extends Controller
         $eventId = $meta['event_id'] ?? null;
         $eventU = $meta['event_uuid'] ?? null;
 
-        // League-backed: create LeagueParticipant (idempotent)
+        // League-backed: create/update LeagueParticipant (idempotent)
         if ($leagueId || $leagueU) {
             $league = $leagueId
                 ? League::find($leagueId)
                 : League::where('public_uuid', $leagueU)->first();
 
             if ($league) {
-                $this->ensureLeagueParticipant($league, $order);
+                $this->ensureLeagueParticipant($league, $order, $meta);
             } else {
                 Log::warning('fulfillment: league not found', ['league_id' => $leagueId, 'league_uuid' => $leagueU, 'order_id' => $order->id]);
             }
@@ -287,7 +287,6 @@ class StripeWebhookController extends Controller
                 return;
             }
 
-            // Prefer EventParticipant, else EventRegistration, else just log
             if (class_exists(\App\Models\EventParticipant::class)) {
                 $this->ensureEventParticipant($event, $order);
             } elseif (class_exists(\App\Models\EventRegistration::class)) {
@@ -301,11 +300,20 @@ class StripeWebhookController extends Controller
         }
     }
 
-    private function ensureLeagueParticipant(League $league, Order $order): void
+    /**
+     * Ensure a LeagueParticipant exists. Stamps event_id and optionally division/line-time
+     * from order item metadata when present. If participant already exists but event_id is NULL,
+     * backfills it.
+     */
+    private function ensureLeagueParticipant(League $league, Order $order, array $itemMeta = []): void
     {
-        // Detect existing by user_id or email
         $buyer = $order->buyer ?? null;
         $email = $order->buyer_email ?: ($buyer?->email ?? null);
+
+        // Prefer event_id from league; fall back to metadata if provided.
+        $eventIdFromLeague = $league->event_id ?: null;
+        $eventIdFromMeta = $itemMeta['event_id'] ?? null;
+        $eventId = $eventIdFromLeague ?: ($eventIdFromMeta ?: null);
 
         $exists = LeagueParticipant::query()
             ->where('league_id', $league->id)
@@ -317,20 +325,86 @@ class StripeWebhookController extends Controller
             })
             ->first();
 
+        // If it exists, backfill missing event_id (and optional fields) if needed.
         if ($exists) {
+            $dirty = false;
+
+            if (! $exists->event_id && $eventId) {
+                $exists->event_id = (int) $eventId;
+                $dirty = true;
+            }
+
+            // Optionally backfill other fields one-time if empty
+            $maybe = function ($key) use ($itemMeta) {
+                return array_key_exists($key, $itemMeta) ? $itemMeta[$key] : null;
+            };
+
+            if (! $exists->event_division_id && $maybe('event_division_id')) {
+                $exists->event_division_id = (int) $itemMeta['event_division_id'];
+                $dirty = true;
+            }
+            if (! $exists->preferred_line_time_id && $maybe('preferred_line_time_id')) {
+                $exists->preferred_line_time_id = (int) $itemMeta['preferred_line_time_id'];
+                $dirty = true;
+            }
+            if (! $exists->assigned_line_time_id && $maybe('assigned_line_time_id')) {
+                $exists->assigned_line_time_id = (int) $itemMeta['assigned_line_time_id'];
+                $dirty = true;
+            }
+            if (! $exists->assigned_lane_number && $maybe('assigned_lane_number')) {
+                $exists->assigned_lane_number = (int) $itemMeta['assigned_lane_number'];
+                $dirty = true;
+            }
+            if (! $exists->assigned_lane_slot && $maybe('assigned_lane_slot')) {
+                $exists->assigned_lane_slot = (string) $itemMeta['assigned_lane_slot'];
+                $dirty = true;
+            }
+            if ($maybe('assignment_status') && $exists->assignment_status === 'pending') {
+                $exists->assignment_status = (string) $itemMeta['assignment_status'];
+                $dirty = true;
+            }
+
+            if ($dirty) {
+                $exists->saveQuietly();
+            }
+
             return;
         }
 
+        // Create a new participant
         $fullName = trim((string) ($buyer?->name ?? ''));
         [$first, $last] = $this->splitFullName($fullName, $email);
 
-        LeagueParticipant::create([
+        $payload = [
             'league_id' => $league->id,
+            'event_id' => $eventId ? (int) $eventId : null, // ✅ stamp event_id
             'user_id' => $order->buyer_id,
             'first_name' => $first,
             'last_name' => $last,
-            'email' => $email ?: null, // ✅ fix: set key properly
-        ]);
+            'email' => $email ?: null,
+        ];
+
+        // Optional metadata → participant fields
+        if (! empty($itemMeta['event_division_id'])) {
+            $payload['event_division_id'] = (int) $itemMeta['event_division_id'];
+        }
+        if (! empty($itemMeta['preferred_line_time_id'])) {
+            $payload['preferred_line_time_id'] = (int) $itemMeta['preferred_line_time_id'];
+        }
+        if (! empty($itemMeta['assigned_line_time_id'])) {
+            $payload['assigned_line_time_id'] = (int) $itemMeta['assigned_line_time_id'];
+        }
+        if (! empty($itemMeta['assigned_lane_number'])) {
+            $payload['assigned_lane_number'] = (int) $itemMeta['assigned_lane_number'];
+        }
+        if (! empty($itemMeta['assigned_lane_slot'])) {
+            $payload['assigned_lane_slot'] = (string) $itemMeta['assigned_lane_slot'];
+        }
+        if (! empty($itemMeta['assignment_status'])) {
+            $payload['assignment_status'] = (string) $itemMeta['assignment_status'];
+        }
+
+        LeagueParticipant::create($payload);
     }
 
     /** Optional fulfillment helpers for events (only used if these models exist) */
@@ -448,7 +522,7 @@ class StripeWebhookController extends Controller
         }
 
         if (! $user) {
-            // As a last resort, try fetching the customer’s email and find by email
+            // Last resort: fetch Stripe customer and try by email
             try {
                 \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
                 $customer = \Stripe\Customer::retrieve($sub->customer);
@@ -481,21 +555,16 @@ class StripeWebhookController extends Controller
         $currentPeriodEnd = ! empty($sub->current_period_end) ? Carbon::createFromTimestamp($sub->current_period_end) : null;
         $canceledAt = ! empty($sub->canceled_at) ? Carbon::createFromTimestamp($sub->canceled_at) : null;
 
-        // Decide pro flags
         if (in_array($status, ['canceled', 'unpaid', 'incomplete_expired'], true)) {
-            // canceled now
             $user->is_pro = false;
             $user->pro_expires_at = $canceledAt ?: now();
         } elseif ($cancelAtPeriodEnd && $currentPeriodEnd) {
-            // scheduled to end at period end
             $user->is_pro = true;
             $user->pro_expires_at = $currentPeriodEnd;
         } elseif (in_array($status, ['active', 'trialing', 'past_due'], true)) {
-            // fully active (or trial). Leave pro_expires_at open.
             $user->is_pro = true;
             $user->pro_expires_at = null;
         } else {
-            // incomplete, unpaid (not canceled yet), etc. → treat as not pro
             $user->is_pro = false;
             $user->pro_expires_at = null;
         }
@@ -505,7 +574,6 @@ class StripeWebhookController extends Controller
 
     private function handleSubscriptionDeleted($sub): void
     {
-        // When Stripe deletes the sub object (after period ends or immediate cancel).
         $user = User::where('stripe_subscription_id', $sub->id ?? '')->first();
 
         if (! $user && ! empty($sub->customer)) {
@@ -522,11 +590,9 @@ class StripeWebhookController extends Controller
         }
 
         $canceledAt = ! empty($sub->canceled_at) ? Carbon::createFromTimestamp($sub->canceled_at) : now();
-
         $user->is_pro = false;
         $user->pro_expires_at = $canceledAt;
-        // Keep stripe_subscription_id for history, or null it out if you prefer:
-        // $user->stripe_subscription_id = null;
+        // $user->stripe_subscription_id = null; // optional
         $user->save();
     }
 
@@ -544,7 +610,6 @@ class StripeWebhookController extends Controller
             return;
         }
 
-        // On successful payment, mark Pro active and clear scheduled expiry (unless cancel_at_period_end is set).
         try {
             \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
             $sub = \Stripe\Subscription::retrieve($invoice->subscription);

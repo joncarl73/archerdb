@@ -7,7 +7,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LeagueWeek extends Model
 {
-    protected $fillable = ['league_id', 'week_number', 'date', 'is_canceled', 'ends', 'arrows_per_end', 'event_id'];
+    protected $fillable = [
+        'event_id', 'league_id', 'week_number', 'label', 'date', 'ends', 'arrows_per_end', 'is_canceled',
+    ];
 
     protected $casts = ['date' => 'date', 'is_canceled' => 'bool', 'ends' => 'int', 'arrows_per_end' => 'int'];
 

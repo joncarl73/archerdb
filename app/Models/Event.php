@@ -105,6 +105,13 @@ class Event extends Model
         return in_array($this->scoring_mode, ['kiosk', 'tablet'], true);
     }
 
+    public function getKindLabelAttribute(): string
+    {
+        $k = $this->kind;
+
+        return method_exists($k, 'label') ? $k->label() : \Illuminate\Support\Str::headline((string) ($k?->value ?? ''));
+    }
+
     /**
      * Human-friendly label for scoring mode.
      */
