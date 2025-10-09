@@ -3,12 +3,16 @@
 // ← NEW
 use App\Http\Controllers\CheckoutReturnController;
 use App\Http\Controllers\LeagueQrController;
+use App\Http\Controllers\ManageProPortalController;
+use App\Http\Controllers\ProLandingController;
+use App\Http\Controllers\ProReturnController;
 use App\Http\Controllers\PublicCheckinController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
 use App\Http\Controllers\StartConnectForCurrentSellerController;
 use App\Http\Controllers\StartLeagueCheckoutController;
+use App\Http\Controllers\StartProCheckoutController;
 use App\Http\Controllers\StripeReturnController;
 use App\Http\Controllers\StripeWebhookController;
 use App\Models\League;
@@ -54,6 +58,12 @@ Route::middleware(['auth', 'profile.completed'])->group(function () {
     // After Stripe redirects back (informational — fulfillment happens via webhook)
     Route::get('/checkout/return', CheckoutReturnController::class)
         ->name('checkout.return');
+
+    // Upgrade to Pro Web Routes
+    Route::get('/pro', ProLandingController::class)->name('pro.landing');
+    Route::post('/pro/checkout', StartProCheckoutController::class)->name('pro.checkout.start');
+    Route::get('/pro/return', ProReturnController::class)->name('pro.return');
+    Route::get('/pro/manage', ManageProPortalController::class)->name('pro.manage');
 });
 
 // Onboarding Routes

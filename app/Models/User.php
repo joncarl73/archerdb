@@ -3,12 +3,12 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Enums\UserRole;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
-use App\Enums\UserRole;
 
 class User extends Authenticatable
 {
@@ -70,7 +70,8 @@ class User extends Authenticatable
         return $this->hasOne(\App\Models\ArcherProfile::class);
     }
 
-    public function loadouts() {
+    public function loadouts()
+    {
         return $this->hasMany(\App\Models\Loadout::class);
     }
 
@@ -79,4 +80,36 @@ class User extends Authenticatable
         return $this->hasMany(\App\Models\TrainingSession::class);
     }
 
+    public function isPro(): bool
+    {
+        if (! $this->is_pro) {
+            return false;
+        }
+
+        // If we track expiry, respect it
+        if ($this->pro_expires_at && now()->greaterThan($this->pro_expires_at)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function ensureStripeCustomerId(): string
+    {
+        if ($this->stripe_customer_id) {
+            return $this->stripe_customer_id;
+        }
+
+        \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
+        $customer = \Stripe\Customer::create([
+            'email' => $this->email,
+            'name' => trim(($this->name ?? '') ?: ($this->first_name.' '.$this->last_name)),
+            'metadata' => ['user_id' => $this->id],
+        ]);
+
+        $this->stripe_customer_id = $customer->id;
+        $this->save();
+
+        return $this->stripe_customer_id;
+    }
 }
