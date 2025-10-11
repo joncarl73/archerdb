@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureCorporateOnboardingCompleted;
 use App\Http\Middleware\EnsureProfileIsComplete;
 use App\Http\Middleware\EnsureScoringMode;
 use App\Http\Middleware\EnsureUserIsAdmin;
@@ -22,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin' => EnsureUserIsAdmin::class,
             'corporate' => EnsureUserIsCorporate::class,
             'scoring.mode' => EnsureScoringMode::class,
+            'corporate.completed' => EnsureCorporateOnboardingCompleted::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

@@ -5,6 +5,9 @@
             <flux:navlist.item :href="route('settings.password')" wire:navigate>{{ __('Password') }}</flux:navlist.item>
             <flux:navlist.item :href="route('settings.appearance')" wire:navigate>{{ __('Appearance') }}</flux:navlist.item>
             <flux:navlist.item :href="route('settings.archer-profile')" wire:navigate>{{ __('Archer Profile') }}</flux:navlist.item>
+            @corporate
+                <flux:navlist.item :href="route('settings.company')" wire:navigate>{{ __('Company Profile') }}</flux:navlist.item>
+            @endcorporate
         </flux:navlist>
     </div>
 

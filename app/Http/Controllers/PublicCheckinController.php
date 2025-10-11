@@ -7,6 +7,7 @@ namespace App\Http\Controllers;
 use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueParticipant;
+use App\Models\LeagueWeek;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -51,32 +52,29 @@ class PublicCheckinController extends Controller
     {
         $league = $this->leagueOr404($uuid);
 
-        $p = \App\Models\LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
+        $p = LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
 
-        $weeks = \App\Models\LeagueWeek::where('league_id', $league->id)
+        $weeks = LeagueWeek::where('league_id', $league->id)
             ->orderBy('week_number')
             ->get(['id', 'week_number', 'date']);
 
-        // ✅ Use short letters, not human labels
-        $letters = $league->lane_breakdown->letters();                 // [] or ['A','B'] or ['A','B','C','D']
+        // Short letters for lane breakdown
+        $letters = $league->lane_breakdown->letters();                  // [] or ['A','B'] or ['A','B','C','D']
         $positionsPerLane = $league->lane_breakdown->positionsPerLane(); // 1,2,4
 
         $laneOptions = [];
         for ($i = 1; $i <= (int) $league->lanes_count; $i++) {
             if ($positionsPerLane === 1) {
-                // Single: Lane 1, Lane 2, ...
                 $code = (string) $i;
                 $laneOptions[] = ['value' => $code, 'label' => "Lane {$code}"];
             } else {
-                // AB / ABCD: Lane 1A, 1B, [1C, 1D], Lane 2A...
                 foreach ($letters as $L) {
-                    $code = $i.$L; // no hyphen, no descriptive text
+                    $code = $i.$L; // e.g. 5A
                     $laneOptions[] = ['value' => $code, 'label' => "Lane {$code}"];
                 }
             }
         }
 
-        // make sure the view gets `$laneOptions`
         return response()->view('public.checkin.details', compact('league', 'p', 'weeks', 'laneOptions'));
     }
 
@@ -122,7 +120,7 @@ class PublicCheckinController extends Controller
         $weekNumber = (int) $request->input('week_number');
         $laneLabel = $laneNumber.($laneSlot === 'single' ? '' : $laneSlot);
 
-        // ✅ Check if already checked in for this week
+        // Already checked in for this week?
         $existing = LeagueCheckin::query()
             ->where('league_id', $league->id)
             ->where('participant_id', $p->id)
@@ -130,18 +128,11 @@ class PublicCheckinController extends Controller
             ->first();
 
         if ($existing) {
-            // 🚫 Do NOT change lane, week, or timestamps — keep original record as-is
-            $origLaneLabel = $existing->lane_number.($existing->lane_slot === 'single' ? '' : $existing->lane_slot);
-
-            return redirect()
-                ->route('public.checkin.ok', ['uuid' => $uuid])
-                ->with([
-                    'ok_name' => $p->first_name.' '.$p->last_name,
-                    'ok_repeat' => true,
-                    'ok_week' => $existing->week_number,
-                    'ok_lane' => $origLaneLabel,
-                    'ok_checkin_id' => $existing->id, // still handy for "Start scoring"
-                ]);
+            // Do not mutate the existing record — just send them to OK with that checkin id
+            return redirect()->route('public.checkin.ok', [
+                'uuid' => $uuid,
+                'checkin' => $existing->id,
+            ]);
         }
 
         // New check-in
@@ -156,35 +147,52 @@ class PublicCheckinController extends Controller
             'checked_in_at' => now(),
         ]);
 
-        return redirect()
-            ->route('public.checkin.ok', ['uuid' => $uuid])
-            ->with([
-                'ok_name' => $p->first_name.' '.$p->last_name,
-                'ok_repeat' => false,
-                'ok_week' => $weekNumber,
-                'ok_lane' => $laneLabel,
-                'ok_checkin_id' => $checkin->id, // ← NEW: needed for Start scoring
-            ]);
+        return redirect()->route('public.checkin.ok', [
+            'uuid' => $uuid,
+            'checkin' => $checkin->id,
+        ]);
     }
 
-    public function ok(string $uuid)
+    /**
+     * OK page — fully deterministic from URL/DB (no flash).
+     *
+     * Route-model binds {checkin} to LeagueCheckin; we also validate it belongs to {uuid}.
+     */
+    public function ok(string $uuid, LeagueCheckin $checkin)
     {
         $league = $this->leagueOr404($uuid);
 
-        $name = session('ok_name');                // string|null
-        $repeat = (bool) session('ok_repeat', false);
-        $week = session('ok_week');                // int|null
-        $lane = session('ok_lane');                // string like "5" or "5A"
-        $checkinId = session('ok_checkin_id');          // int|null
+        // Guard: ensure the checkin belongs to this league
+        if ((int) $checkin->league_id !== (int) $league->id) {
+            abort(404);
+        }
 
-        // If someone hits this page directly without a session, show a gentle fallback
+        // Derive display fields
+        $name = $checkin->participant_name ?: trim(($checkin->first_name ?? '').' '.($checkin->last_name ?? ''));
+        $week = (int) $checkin->week_number;
+        $lane = $checkin->lane_number.($checkin->lane_slot === 'single' ? '' : $checkin->lane_slot);
+        $checkinId = (int) $checkin->id;
+
+        // "Repeat" if someone already had a checkin for this week prior to this record's creation.
+        // If you store a dedicated flag, swap this logic to use it.
+        $repeat = false;
+        if ($checkin->wasRecentlyCreated === false) {
+            $repeat = true;
+        }
+
+        // Optional: pre-fetch the week row so Blade can render the scheduled date without another query
+        $weekRow = LeagueWeek::where('league_id', $league->id)
+            ->where('week_number', $week)
+            ->first();
+
         return response()->view('public.checkin.ok', [
             'league' => $league,
             'name' => $name,
             'repeat' => $repeat,
             'week' => $week,
             'lane' => $lane,
-            'checkinId' => $checkinId, // Blade uses this to build the Start scoring link
+            'checkinId' => $checkinId,
+            'weekRow' => $weekRow,
         ]);
     }
 

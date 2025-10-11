@@ -1,0 +1,376 @@
+<?php
+use App\Models\League;
+use App\Models\LeagueParticipant;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Storage;
+use Livewire\Volt\Component;
+use Livewire\WithFileUploads;
+use Livewire\WithPagination;
+
+new class extends Component
+{
+    use WithFileUploads, WithPagination;
+
+    public League $league;
+
+    // pagination
+    protected string $pageName = 'participantsPage';
+
+    public int $perPage = 10;
+
+    // search
+    public string $search = '';
+
+    // CSV
+    public bool $showCsvSheet = false;
+
+    public $csv;
+
+    public function mount(League $league): void
+    {
+        Gate::authorize('view', $league);
+        $this->league = $league; // no weeks needed here
+    }
+
+    public function updatingSearch(): void
+    {
+        $this->resetPage($this->pageName);
+    }
+
+    public function goto(int $page): void
+    {
+        $this->gotoPage($page, $this->pageName);
+    }
+
+    public function prevPage(): void
+    {
+        $this->previousPage($this->pageName);
+    }
+
+    public function nextPage(): void
+    {
+        $this->nextPage($this->pageName);
+    }
+
+    public function getParticipantsProperty()
+    {
+        $base = $this->league->participants()
+            ->when($this->search, fn ($q) => $q->where(fn ($w) => $w->where('first_name', 'like', "%{$this->search}%")
+                ->orWhere('last_name', 'like', "%{$this->search}%")
+                ->orWhere('email', 'like', "%{$this->search}%")
+            ))
+            ->orderBy('last_name')
+            ->orderBy('first_name');
+
+        $total = (clone $base)->count();
+        $lastPage = max(1, (int) ceil($total / $this->perPage));
+        $requested = (int) ($this->paginators[$this->pageName] ?? 1);
+        $page = min(max(1, $requested), $lastPage);
+        if ($requested !== $page) {
+            $this->setPage($page, $this->pageName);
+        }
+
+        return $base->paginate($this->perPage, ['*'], $this->pageName, $page);
+    }
+
+    public function getPageWindowProperty(): array
+    {
+        $p = $this->participants;
+        $window = 2;
+        $current = max(1, (int) $p->currentPage());
+        $last = max(1, (int) $p->lastPage());
+        $start = max(1, $current - $window);
+        $end = min($last, $current + $window);
+
+        return compact('current', 'last', 'start', 'end');
+    }
+
+    public function openCsv(): void
+    {
+        Gate::authorize('update', $this->league);
+        $typeVal = ($this->league->type->value ?? $this->league->type);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed leagues.');
+
+            return;
+        }
+        $this->csv = null;
+        $this->showCsvSheet = true;
+    }
+
+    public function importCsv(): void
+    {
+        Gate::authorize('update', $this->league);
+
+        $typeVal = ($this->league->type->value ?? $this->league->type);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed leagues.');
+
+            return;
+        }
+
+        $this->validate([
+            'csv' => ['required', 'file', 'mimes:csv,txt', 'max:10240'],
+        ]);
+
+        $path = $this->csv->store('tmp');
+        $full = Storage::path($path);
+
+        $handle = fopen($full, 'r');
+        if (! $handle) {
+            $this->addError('csv', 'Unable to read uploaded file.');
+
+            return;
+        }
+
+        $headers = fgetcsv($handle);
+        $map = $this->normalizeHeaders($headers);
+
+        $created = 0;
+        $updated = 0;
+        $skipped = 0;
+
+        while (($row = fgetcsv($handle)) !== false) {
+            $data = $this->rowToAssoc($map, $row);
+            $first = trim((string) ($data['first_name'] ?? ''));
+            $last = trim((string) ($data['last_name'] ?? ''));
+            $email = trim((string) ($data['email'] ?? ''));
+
+            if ($first === '' && $last === '') {
+                $skipped++;
+
+                continue;
+            }
+
+            // Closed league requires membership
+            $userId = null;
+            if ($email !== '') {
+                $userId = optional(\App\Models\User::where('email', $email)->first())->id;
+                if (($this->league->type->value ?? $this->league->type) === 'closed' && ! $userId) {
+                    $skipped++;
+
+                    continue;
+                }
+            } elseif (($this->league->type->value ?? $this->league->type) === 'closed') {
+                $skipped++;
+
+                continue;
+            }
+
+            $existing = null;
+            if ($email !== '') {
+                $existing = LeagueParticipant::where('league_id', $this->league->id)->where('email', $email)->first();
+            } else {
+                $existing = LeagueParticipant::where('league_id', $this->league->id)
+                    ->whereNull('email')->where('first_name', $first)->where('last_name', $last)->first();
+            }
+
+            if ($existing) {
+                $existing->update(['first_name' => $first, 'last_name' => $last, 'user_id' => $userId]);
+                $updated++;
+            } else {
+                LeagueParticipant::create([
+                    'league_id' => $this->league->id, 'user_id' => $userId,
+                    'first_name' => $first, 'last_name' => $last, 'email' => $email !== '' ? $email : null,
+                ]);
+                $created++;
+            }
+        }
+
+        fclose($handle);
+        @unlink($full);
+
+        $this->league->load('participants');
+        $this->showCsvSheet = false;
+        $this->csv = null;
+
+        $this->dispatch('toast', type: 'success',
+            message: "Import complete — created {$created}, updated {$updated}, skipped {$skipped}."
+        );
+    }
+
+    private function normalizeHeaders(?array $headers): array
+    {
+        $map = [];
+        if (! $headers) {
+            return $map;
+        }
+        foreach ($headers as $i => $h) {
+            $k = strtolower(trim((string) $h));
+            $k = str_replace([' ', '-'], '_', $k);
+            $map[$i] = $k; // expected: first_name,last_name,email
+        }
+
+        return $map;
+    }
+
+    private function rowToAssoc(array $map, array $row): array
+    {
+        $out = [];
+        foreach ($map as $i => $key) {
+            $out[$key] = $row[$i] ?? null;
+        }
+
+        return $out;
+    }
+};
+?>
+
+<section class="w-full">
+    @php
+        $typeVal   = ($league->type->value ?? $league->type);
+        $isClosed  = ($typeVal === 'closed');
+    @endphp
+
+    <div class="mx-auto max-w-7xl">
+        {{-- Header --}}
+        <div class="sm:flex sm:items-center">
+            <div class="sm:flex-auto">
+                <h1 class="text-base font-semibold text-gray-900 dark:text-white">
+                    {{ $league->title }} — Participants
+                </h1>
+                <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">
+                    Manage league participants.
+                </p>
+            </div>
+            <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
+                <div class="flex items-center gap-2">
+                    <flux:button as="a" href="{{ route('corporate.leagues.show', $league) }}" variant="ghost">
+                        ← Back to league
+                    </flux:button>
+
+                    <flux:dropdown>
+                        <flux:button icon:trailing="chevron-down">Actions</flux:button>
+                        <flux:menu class="min-w-64">
+                            @unless($isClosed)
+                                <flux:menu.item href="{{ route('corporate.leagues.participants.template', $league) }}" icon="table-cells">
+                                    Download CSV template
+                                </flux:menu.item>
+                            @endunless
+                            <flux:menu.item href="{{ route('corporate.leagues.participants.export', $league) }}" icon="users">
+                                Export participants
+                            </flux:menu.item>
+                        </flux:menu>
+                    </flux:dropdown>
+
+                    @unless($isClosed)
+                        <flux:button wire:click="openCsv" variant="primary" color="indigo" icon="arrow-up-tray">
+                            Upload CSV
+                        </flux:button>
+                    @endunless
+                </div>
+            </div>
+        </div>
+
+        {{-- Search --}}
+        <div class="mt-6 max-w-sm">
+            <flux:input icon="magnifying-glass" placeholder="Search participants…" wire:model.live.debounce.300ms="search" />
+        </div>
+
+        {{-- Table --}}
+        <div class="mt-4 overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
+            <table class="w-full text-left">
+                <thead class="bg-white dark:bg-gray-900">
+                    <tr>
+                        <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Name</th>
+                        <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Email</th>
+                        <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Member</th>
+                        <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100 dark:divide-white/10">
+                    @forelse($this->participants as $p)
+                        <tr>
+                            <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
+                                {{ $p->last_name }}, {{ $p->first_name }}
+                            </td>
+                            <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
+                                {{ $p->email ?? '—' }}
+                            </td>
+                            <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
+                                {{ $p->user_id ? 'Yes' : 'No' }}
+                            </td>
+                            <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
+                                <span class="text-xs opacity-60">—</span>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="4" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                No participants yet. Upload a CSV to get started.
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+
+            {{-- Pager --}}
+            @php($p = $this->participants)
+            @php($w = $this->pageWindow)
+            <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
+                <div class="flex flex-1 justify-between sm:hidden">
+                    <button wire:click="prevPage" @disabled($p->onFirstPage()) class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Previous</button>
+                    <button wire:click="nextPage" @disabled(!$p->hasMorePages()) class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Next</button>
+                </div>
+
+                <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                    <div>
+                        <p class="text-sm text-gray-700 dark:text-gray-300">
+                            Showing <span class="font-medium">{{ $p->firstItem() ?? 0 }}</span>
+                            to <span class="font-medium">{{ $p->lastItem() ?? 0 }}</span>
+                            of <span class="font-medium">{{ $p->total() }}</span> results
+                        </p>
+                    </div>
+                    <div>
+                        <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
+                            <button wire:click="prevPage" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled($p->onFirstPage())>
+                                <span class="sr-only">Previous</span>
+                                <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5"><path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
+                            </button>
+                            @for ($i = $w['start']; $i <= $w['end']; $i++)
+                                @if ($i === $w['current'])
+                                    <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:bg-indigo-500 dark:focus-visible:outline-indigo-500">{{ $i }}</span>
+                                @else
+                                    <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
+                                @endif
+                            @endfor
+                            <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
+                                <span class="sr-only">Next</span>
+                                <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
+                            </button>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- CSV sheet --}}
+        @if($showCsvSheet)
+            <div class="fixed inset-0 z-40">
+                <div class="absolute inset-0 bg-black/40" wire:click="$set('showCsvSheet', false)"></div>
+
+                <div class="absolute inset-y-0 right-0 w-full max-w-2xl h-full overflow-y-auto bg-white p-6 shadow-xl dark:bg-zinc-900">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Upload participants CSV</h2>
+                        <button class="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"
+                                wire:click="$set('showCsvSheet', false)">✕</button>
+                    </div>
+
+                    <form wire:submit.prevent="importCsv" class="mt-6 space-y-6">
+                        <div>
+                            <flux:label for="csv">CSV file</flux:label>
+                            <input id="csv" type="file" wire:model="csv" accept=".csv,text/csv" class="mt-1 block w-full text-sm" />
+                            @error('csv') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                            <p class="mt-2 text-xs opacity-70">Expected headers: <code>first_name,last_name,email</code></p>
+                        </div>
+
+                        <div class="flex justify-end gap-3">
+                            <flux:button type="button" variant="ghost" wire:click="$set('showCsvSheet', false)">Cancel</flux:button>
+                            <flux:button type="submit" variant="primary">Import</flux:button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        @endif
+    </div>
+</section>

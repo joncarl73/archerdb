@@ -16,6 +16,12 @@ new class extends Component
 
     public array $participantIds = [];
 
+    // per-session add picker state: [sessionId => [participantId, ...]]
+    public array $sessionAdd = [];
+
+    // per-session collapsible "Add" panel visibility
+    public array $showAdd = [];
+
     // derived for UI
     public array $participantsForWeek = []; // available (checked-in but not assigned) archers
 
@@ -52,6 +58,12 @@ new class extends Component
         $this->qrUrl = null;
     }
 
+    // Toggle per-row add panel
+    public function toggleAdd(int $sessionId): void
+    {
+        $this->showAdd[$sessionId] = ! ($this->showAdd[$sessionId] ?? false);
+    }
+
     public function mount(League $league): void
     {
         Gate::authorize('update', $league);
@@ -84,6 +96,22 @@ new class extends Component
         $sessions = KioskSession::query()
             ->where('league_id', $this->league->id)
             ->where('week_number', $this->week_number)
+            ->get(['participants']);
+
+        $ids = [];
+        foreach ($sessions as $s) {
+            $ids = array_merge($ids, $this->normalizeParticipants($s->participants));
+        }
+
+        return array_values(array_unique(array_map('intval', $ids)));
+    }
+
+    // assigned ids for any given week (race checks when adding)
+    protected function assignedParticipantIdsForWeekNumber(int $week): array
+    {
+        $sessions = KioskSession::query()
+            ->where('league_id', $this->league->id)
+            ->where('week_number', $week)
             ->get(['participants']);
 
         $ids = [];
@@ -210,17 +238,87 @@ new class extends Component
         $this->refreshSessions();
         $this->refreshParticipantsForWeek();
 
-        // clear any flash URL banner for deleted session
         $this->createdToken = null;
 
         $this->dispatch('toast', type: 'success', message: 'Kiosk session deleted.');
+    }
+
+    // remove a single archer from a kiosk session
+    public function removeFromSession(int $sessionId, int $participantId): void
+    {
+        Gate::authorize('update', $this->league);
+
+        $s = KioskSession::where('league_id', $this->league->id)->findOrFail($sessionId);
+        $current = $this->normalizeParticipants($s->participants);
+
+        if (! in_array((int) $participantId, $current, true)) {
+            $this->dispatch('toast', type: 'warning', message: 'Archer not found in this kiosk.');
+
+            return;
+        }
+
+        $current = array_values(array_filter($current, fn ($id) => (int) $id !== (int) $participantId));
+        $s->update(['participants' => $current]);
+
+        $this->refreshSessions();
+        $this->refreshParticipantsForWeek();
+
+        $this->dispatch('toast', type: 'success', message: 'Archer removed from kiosk.');
+    }
+
+    // add selected archers (from current week’s available list) to a kiosk session
+    public function addToSession(int $sessionId): void
+    {
+        Gate::authorize('update', $this->league);
+
+        $sel = $this->sessionAdd[$sessionId] ?? [];
+        $sel = $this->normalizeParticipants($sel);
+
+        if (empty($sel)) {
+            $this->addError("sessionAdd.$sessionId", 'Pick at least one archer to add.');
+
+            return;
+        }
+
+        $s = KioskSession::where('league_id', $this->league->id)->findOrFail($sessionId);
+
+        // Require same week as the UI filter to keep option list correct
+        if ((int) $s->week_number !== (int) $this->week_number) {
+            $this->addError("sessionAdd.$sessionId", 'Switch to this session’s week to add archers.');
+
+            return;
+        }
+
+        // Race check across all kiosks for that week
+        $alreadyAssigned = $this->assignedParticipantIdsForWeekNumber((int) $s->week_number);
+        $dupes = array_values(array_intersect($alreadyAssigned, $sel));
+        if (! empty($dupes)) {
+            $this->addError("sessionAdd.$sessionId", 'One or more selected archers are already assigned to a kiosk. Refresh and try again.');
+            $this->refreshParticipantsForWeek();
+
+            return;
+        }
+
+        $current = $this->normalizeParticipants($s->participants);
+        $merged = array_values(array_unique(array_map('intval', array_merge($current, $sel))));
+
+        $s->update(['participants' => $merged]);
+
+        // clear picker and auto-close panel for that session
+        $this->sessionAdd[$sessionId] = [];
+        $this->showAdd[$sessionId] = false;
+
+        $this->refreshSessions();
+        $this->refreshParticipantsForWeek();
+
+        $this->dispatch('toast', type: 'success', message: 'Archer(s) added to kiosk.');
     }
 };
 ?>
 
 <section class="w-full">
     <div class="mx-auto max-w-7xl">
-        {{-- Page header (stays at the top) --}}
+        {{-- Page header --}}
         <div class="sm:flex sm:items-center">
             <div class="sm:flex-auto">
                 <h1 class="text-base font-semibold text-gray-900 dark:text-white">
@@ -387,11 +485,9 @@ new class extends Component
                 <table class="w-full text-left">
                     <thead class="bg-white dark:bg-gray-900">
                         <tr>
-                            <th class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 dark:text-white">Created</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Week</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Assigned archers</th>
                             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Status</th>
-                            <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Tablet URL</th>
                             <th class="py-3.5 pl-3 pr-4 text-right"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
@@ -402,12 +498,10 @@ new class extends Component
                             @php($rows = \App\Models\LeagueParticipant::where('league_id', $league->id)->whereIn('id', $ids)->get(['id','first_name','last_name'])->keyBy('id'))
                             @php($checkins = \App\Models\LeagueCheckin::where('league_id', $league->id)->where('week_number', $s->week_number)->whereIn('participant_id', $ids)->get(['participant_id','lane_number','lane_slot'])->keyBy('participant_id'))
                             <tr>
-                                <td class="py-3.5 pl-4 pr-3 text-sm text-gray-800 dark:text-gray-200">
-                                    {{ $s->created_at?->format('Y-m-d H:i') ?? '—' }}
-                                </td>
                                 <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
                                     Week {{ $s->week_number }}
                                 </td>
+
                                 <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
                                     @if (!empty($ids))
                                         <div class="flex flex-wrap gap-1">
@@ -423,8 +517,14 @@ new class extends Component
                                                     @endif
                                                     @php($lane = $lane !== '' ? $lane : null)
                                                 @endif
-                                                <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">
+                                                <span class="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">
                                                     {{ $nm }}@if($lane) — Lane {{ $lane }}@endif
+                                                    <button
+                                                        type="button"
+                                                        wire:click="removeFromSession({{ $s->id }}, {{ (int) $pid }})"
+                                                        class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded hover:bg-rose-100 dark:hover:bg-rose-500/10"
+                                                        title="Remove from this kiosk"
+                                                    >×</button>
                                                 </span>
                                             @endforeach
                                         </div>
@@ -432,6 +532,7 @@ new class extends Component
                                         —
                                     @endif
                                 </td>
+
                                 <td class="px-3 py-3.5 text-sm">
                                     @if ($s->is_active)
                                         <span class="rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">Active</span>
@@ -439,11 +540,7 @@ new class extends Component
                                         <span class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-white/10 dark:text-gray-300">Inactive</span>
                                     @endif
                                 </td>
-                                <td class="px-3 py-3.5 text-sm">
-                                    <a href="{{ $url }}" class="truncate text-indigo-600 underline hover:no-underline dark:text-indigo-400" target="_blank" rel="noopener">
-                                        {{ $url }}
-                                    </a>
-                                </td>
+
                                 <td class="py-3.5 pl-3 pr-4 text-right">
                                     <div class="inline-flex items-center gap-2">
                                         <a href="{{ $url }}" target="_blank" rel="noopener"
@@ -451,16 +548,6 @@ new class extends Component
                                             Open
                                         </a>
 
-                                        <button type="button"
-                                                x-data="{copied:false}"
-                                                @click="navigator.clipboard.writeText('{{ $url }}'); copied=true; setTimeout(()=>copied=false,1500)"
-                                                class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                       dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
-                                            <span x-show="!copied">Copy</span>
-                                            <span x-show="copied">Copied!</span>
-                                        </button>
-
-                                        {{-- NEW: QR button (opens Livewire-driven modal) --}}
                                         <button
                                             type="button"
                                             wire:click="openQr('{{ $s->token }}')"
@@ -471,7 +558,16 @@ new class extends Component
                                             QR
                                         </button>
 
-                                        {{-- Delete immediately: no modal --}}
+                                        {{-- Toggle per-row "Add to kiosk" panel --}}
+                                        <button
+                                            type="button"
+                                            wire:click="toggleAdd({{ $s->id }})"
+                                            class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                                                   dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                                            {{ ($showAdd[$s->id] ?? false) ? 'Hide' : 'Add' }}
+                                        </button>
+
+                                        {{-- Delete --}}
                                         <button wire:click="deleteSession({{ $s->id }})"
                                                 class="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-rose-600 inset-ring inset-ring-gray-300 hover:bg-rose-50
                                                        dark:bg-white/5 dark:text-rose-300 dark:inset-ring-white/10 dark:hover:bg-rose-500/10">
@@ -480,9 +576,61 @@ new class extends Component
                                     </div>
                                 </td>
                             </tr>
+
+                            {{-- Collapsible "Add to kiosk" row --}}
+                            <tr x-data x-cloak @class(['hidden' => !($showAdd[$s->id] ?? false)])>
+                                <td colspan="4" class="bg-gray-50/60 dark:bg-white/5 px-4 py-4">
+                                    @if ((int) $s->week_number === (int) $week_number)
+                                        @if (count($participantsForWeek))
+                                            <div class="flex flex-wrap items-start gap-3">
+                                                <div class="min-w-[16rem]">
+                                                    <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                                        Add archers to this kiosk (Week {{ $s->week_number }})
+                                                    </label>
+                                                    <select
+                                                        multiple
+                                                        wire:model="sessionAdd.{{ $s->id }}"
+                                                        class="w-full rounded-md border border-gray-200 bg-white p-2 text-xs dark:border-white/10 dark:bg-white/5">
+                                                        @foreach ($participantsForWeek as $p)
+                                                            <option value="{{ (int) $p['id'] }}">
+                                                                {{ $p['name'] }}@if($p['lane']) — Lane {{ $p['lane'] }}@endif
+                                                            </option>
+                                                        @endforeach
+                                                    </select>
+                                                    @error("sessionAdd.$s->id") <p class="mt-1 text-xs text-rose-600">{{ $message }}</p> @enderror
+                                                </div>
+
+                                                <div class="flex items-center gap-2 pt-6 sm:pt-7">
+                                                    <button
+                                                        type="button"
+                                                        wire:click="addToSession({{ $s->id }})"
+                                                        class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400">
+                                                        Add selected
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        wire:click="toggleAdd({{ $s->id }})"
+                                                        class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
+                                                               dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                                                        Cancel
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        @else
+                                            <div class="text-xs text-gray-600 dark:text-gray-300">
+                                                No unassigned archers remaining for week {{ $week_number }}.
+                                            </div>
+                                        @endif
+                                    @else
+                                        <div class="text-xs text-gray-600 dark:text-gray-300">
+                                            Switch the filter above to <span class="font-medium">week {{ $s->week_number }}</span> to add archers to this kiosk.
+                                        </div>
+                                    @endif
+                                </td>
+                            </tr>
                         @empty
                             <tr>
-                                <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                                <td colspan="4" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
                                     No kiosk sessions {{ $showAll ? 'yet' : 'for week '.$week_number }}.
                                 </td>
                             </tr>
@@ -509,7 +657,6 @@ new class extends Component
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Scan to open kiosk on a device.</p>
 
                 <div class="mt-4 flex items-center justify-center">
-                    {{-- Server-rendered SVG (no external requests) --}}
                     {!! QrCode::format('svg')
                         ->size(240)
                         ->margin(1)

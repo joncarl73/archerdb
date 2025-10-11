@@ -68,9 +68,15 @@ Route::middleware(['auth', 'profile.completed'])->group(function () {
 
 // Onboarding Routes
 Volt::route('/onboarding', 'pages.onboarding')->name('onboarding')->middleware(['auth']);
+Volt::route('/onboarding/corporate', 'pages.corporate-onboarding')->name('corporate.onboarding')->middleware(['auth']);
 
 // Webhook Routes
 Route::post('/stripe/webhook', StripeWebhookController::class)->name('stripe.webhook');
+
+// Corporate settings
+Route::middleware(['auth', 'corporate'])->group(function () {
+    Volt::route('settings/company', 'settings.company')->name('settings.company');
+});
 
 // Admin Routes
 Route::middleware(['auth', 'admin'])
@@ -94,7 +100,7 @@ Route::middleware(['auth'])->group(function () {
 });
 
 // League Routes
-Route::middleware(['auth', 'profile.completed', 'corporate'])
+Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.completed'])
     ->prefix('corporate')
     ->name('corporate.')
     ->group(function () {
@@ -105,6 +111,9 @@ Route::middleware(['auth', 'profile.completed', 'corporate'])
             ->whereNumber('league'); // uses route model binding for League
         Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
             ->name('leagues.info.edit')
+            ->whereNumber('league');
+        Volt::route('leagues/{league}/participants', 'leagues.participants')
+            ->Name('leagues.participants.index')
             ->whereNumber('league');
 
         // CSV template download
@@ -180,7 +189,8 @@ Route::prefix('l/{uuid}')->group(function () {
         ->whereNumber('participant')
         ->name('public.checkin.details.submit');
 
-    Route::get('/checkin/ok', [PublicCheckinController::class, 'ok'])
+    Route::get('/checkin/ok/{checkin}', [PublicCheckinController::class, 'ok'])
+        ->whereNumber('checkin')
         ->name('public.checkin.ok'); // confirmation
 
     // Personal-device scoring

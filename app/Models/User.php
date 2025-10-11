@@ -38,6 +38,10 @@ class User extends Authenticatable
         'remember_token',
     ];
 
+    protected $casts = [
+        'role' => UserRole::class,
+    ];
+
     /**
      * Get the attributes that should be cast.
      *
@@ -111,5 +115,16 @@ class User extends Authenticatable
         $this->save();
 
         return $this->stripe_customer_id;
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(\App\Models\Company::class);
+    }
+
+    // Convenience checker
+    public function isCorporate(): bool
+    {
+        return $this->role === 'corporate';
     }
 }
