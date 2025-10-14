@@ -2,8 +2,8 @@
 use App\Models\League;
 use App\Services\LeagueScheduler;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
-use Livewire\Attributes\On;
 use Livewire\Volt\Component;
 use Livewire\WithPagination;
 
@@ -11,7 +11,7 @@ new class extends Component
 {
     use WithPagination;
 
-    // pagination (match your pattern)
+    // pagination
     protected string $pageName = 'leaguesPage';
 
     public int $perPage = 5;
@@ -36,7 +36,7 @@ new class extends Component
 
     public int $length_weeks = 10;
 
-    public int $day_of_week = 3; // Wednesday default (0=Sun..6=Sat)
+    public int $day_of_week = 3; // 0=Sun..6=Sat
 
     public ?string $start_date = null; // Y-m-d
 
@@ -54,7 +54,7 @@ new class extends Component
 
     public int $arrows_per_end = 3;
 
-    // NEW: League-level scoring settings
+    // League-level scoring settings
     public int $x_ring_value = 10;                 // 10 or 11
 
     public string $scoring_mode = 'personal_device'; // personal_device | tablet
@@ -75,7 +75,7 @@ new class extends Component
         $this->resetPage($this->pageName);
     }
 
-    // pagination helpers (match your loadouts)
+    // pagination helpers
     public function goto(int $page): void
     {
         $this->gotoPage($page, $this->pageName);
@@ -91,16 +91,47 @@ new class extends Component
         $this->nextPage($this->pageName);
     }
 
-    // computed: paginated leagues for current corporate user
+    // ---- Core query: "mine OR I collaborate on"
+    protected function baseLeaguesQuery()
+    {
+        $user = Auth::user();
+        $userId = $user?->id;
+        $companyId = $user?->company_id;
+
+        $isCompanyOwner = $companyId
+            ? \App\Models\Company::query()
+                ->where('id', $companyId)
+                ->where('owner_user_id', $userId)
+                ->exists()
+            : false;
+
+        $collabLeagueIds = DB::table('league_users')
+            ->where('user_id', $userId)
+            ->pluck('league_id');
+
+        return League::query()
+            ->with(['owner:id,name'])   // <— added
+            ->when(
+                $isCompanyOwner && $companyId,
+                fn ($q) => $q->where('company_id', $companyId),
+                fn ($q) => $q->where(function ($w) use ($userId, $collabLeagueIds) {
+                    $w->where('owner_id', $userId);
+                    if ($collabLeagueIds->isNotEmpty()) {
+                        $w->orWhereIn('id', $collabLeagueIds->all());
+                    }
+                })
+            )
+            ->when($this->search, fn ($q) => $q->where(function ($w) {
+                $w->where('title', 'like', "%{$this->search}%")
+                    ->orWhere('location', 'like', "%{$this->search}%");
+            }))
+            ->orderBy($this->sort, $this->direction);
+    }
+
+    // computed: paginated leagues
     public function getLeaguesProperty()
     {
-        $base = League::query()
-            ->where('owner_id', Auth::id())
-            ->when($this->search, fn ($q) => $q->where(fn ($w) => $w
-                ->where('title', 'like', "%{$this->search}%")
-                ->orWhere('location', 'like', "%{$this->search}%")
-            ))
-            ->orderBy($this->sort, $this->direction);
+        $base = $this->baseLeaguesQuery();
 
         $total = (clone $base)->count();
         $lastPage = max(1, (int) ceil($total / $this->perPage));
@@ -148,7 +179,8 @@ new class extends Component
 
     public function openEdit(int $id): void
     {
-        $league = League::where('owner_id', Auth::id())->findOrFail($id);
+        // Only true owners/company owner/admin can edit settings
+        $league = League::findOrFail($id);
         Gate::authorize('update', $league);
 
         $this->editingId = $league->id;
@@ -162,11 +194,11 @@ new class extends Component
 
         // lanes
         $this->lanes_count = (int) ($league->lanes_count ?? 10);
-        $this->lane_breakdown = $league->lane_breakdown_value ?? 'single'; // accessor-safe
+        $this->lane_breakdown = $league->lane_breakdown_value ?? 'single';
         $this->ends_per_day = (int) ($league->ends_per_day ?? 10);
         $this->arrows_per_end = (int) ($league->arrows_per_end ?? 3);
 
-        // NEW: scoring settings (enum-cast or scalar-safe)
+        // scoring settings
         $this->x_ring_value = (int) ($league->x_ring_value->value ?? $league->x_ring_value ?? 10);
         $this->scoring_mode = (string) ($league->scoring_mode->value ?? $league->scoring_mode ?? 'personal_device');
 
@@ -193,13 +225,13 @@ new class extends Component
             'ends_per_day' => ['required', 'integer', 'between:1,60'],
             'arrows_per_end' => ['required', 'integer', 'between:1,12'],
 
-            // NEW: league-level scoring settings
+            // league-level scoring
             'x_ring_value' => ['required', 'integer', 'in:10,11'],
             'scoring_mode' => ['required', 'in:personal_device,tablet'],
         ]);
 
         if ($this->editingId) {
-            $league = League::where('owner_id', Auth::id())->findOrFail($this->editingId);
+            $league = League::findOrFail($this->editingId);
             Gate::authorize('update', $league);
 
             $league->update([
@@ -216,7 +248,6 @@ new class extends Component
                 'ends_per_day' => $this->ends_per_day,
                 'arrows_per_end' => $this->arrows_per_end,
 
-                // NEW
                 'x_ring_value' => $this->x_ring_value,
                 'scoring_mode' => $this->scoring_mode,
             ]);
@@ -226,6 +257,7 @@ new class extends Component
         } else {
             $league = League::create([
                 'owner_id' => Auth::id(),
+                'company_id' => Auth::user()?->company_id,
                 'title' => $this->title,
                 'location' => $this->location,
                 'length_weeks' => $this->length_weeks,
@@ -237,14 +269,16 @@ new class extends Component
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
 
-                // Defaults captured on create as well (nice for downstream logic)
+                // defaults on create
                 'ends_per_day' => $this->ends_per_day,
                 'arrows_per_end' => $this->arrows_per_end,
 
-                // NEW
                 'x_ring_value' => $this->x_ring_value,
                 'scoring_mode' => $this->scoring_mode,
             ]);
+
+            // creator is per-league OWNER collaborator
+            $league->collaborators()->syncWithoutDetaching([Auth::id() => ['role' => 'owner']]);
 
             // generate weeks on create
             $scheduler->buildWeeks($league);
@@ -258,16 +292,18 @@ new class extends Component
     // inline actions
     public function togglePublish(int $id): void
     {
-        $league = League::where('owner_id', Auth::id())->findOrFail($id);
-        Gate::authorize('update', $league);
+        $league = League::findOrFail($id);
+        Gate::authorize('update', $league); // managers cannot publish/unpublish
+
         $league->update(['is_published' => ! $league->is_published]);
         $this->dispatch('toast', type: 'success', message: $league->is_published ? 'Published' : 'Unpublished');
     }
 
     public function delete(int $id): void
     {
-        $league = League::where('owner_id', Auth::id())->findOrFail($id);
-        Gate::authorize('delete', $league);
+        $league = League::findOrFail($id);
+        Gate::authorize('delete', $league); // managers cannot delete
+
         $league->delete();
         $this->dispatch('toast', type: 'success', message: 'League deleted');
     }
@@ -291,7 +327,7 @@ new class extends Component
         $this->ends_per_day = 10;
         $this->arrows_per_end = 3;
 
-        // NEW
+        // league-level
         $this->x_ring_value = 10;
         $this->scoring_mode = 'personal_device';
     }
@@ -322,7 +358,7 @@ new class extends Component
         </div>
     </div>
 
-    {{-- Table with outer border (same shell as Loadouts) --}}
+    {{-- Table --}}
     <div class="mt-6">
         <div class="mx-auto max-w-7xl">
             <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
@@ -336,7 +372,7 @@ new class extends Component
                             {{-- Lanes/Capacity --}}
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">Lanes</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Ends × Arrows</th>
-                            {{-- NEW: Scoring --}}
+                            {{-- Scoring --}}
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Scoring</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Status</th>
                             <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
@@ -345,20 +381,23 @@ new class extends Component
                     <tbody class="divide-y divide-gray-100 dark:divide-white/10">
                         @forelse($this->leagues as $lg)
                             @php
-                                $mode = $lg->lane_breakdown_value; // always a string
-                                $per  = $mode === 'ab' ? 2 : ($mode === 'abcd' ? 4 : 1);
-                                $cap  = max(0, (int)($lg->lanes_count ?? 0)) * $per;
-
-                                $xVal = (int)($lg->x_ring_value->value ?? $lg->x_ring_value ?? 10);
+                                $mode  = $lg->lane_breakdown_value;
+                                $per   = $mode === 'ab' ? 2 : ($mode === 'abcd' ? 4 : 1);
+                                $cap   = max(0, (int)($lg->lanes_count ?? 0)) * $per;
+                                $xVal  = (int)($lg->x_ring_value->value ?? $lg->x_ring_value ?? 10);
                                 $sMode = (string)($lg->scoring_mode->value ?? $lg->scoring_mode ?? 'personal_device');
                             @endphp
                             <tr>
                                 <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
                                     <a href="{{ route('corporate.leagues.show', $lg->id) }}"
-                                    class="hover:underline hover:text-indigo-600 dark:hover:text-indigo-400">
+                                       class="hover:underline hover:text-indigo-600 dark:hover:text-indigo-400">
                                         {{ $lg->title }}
                                     </a>
-                                    <div class="text-xs opacity-60">{{ $lg->location ?: '—' }}</div>
+                                    <div class="mt-1">
+                                        <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-inset ring-gray-300 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10">
+                                            Created by {{ $lg->owner->name ?? 'Unknown' }}
+                                        </span>
+                                    </div>
                                 </td>
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
                                     {{ ucfirst($lg->type->value ?? $lg->type) }}
@@ -384,7 +423,7 @@ new class extends Component
                                     <span class="text-xs opacity-70">({{ $lg->ends_per_day * $lg->arrows_per_end }} total)</span>
                                 </td>
 
-                                {{-- NEW: Scoring summary --}}
+                                {{-- Scoring summary --}}
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     X={{ $xVal }} • {{ $sMode === 'tablet' ? 'Tablet' : 'Personal' }}
                                 </td>
@@ -400,41 +439,59 @@ new class extends Component
                                         </span>
                                     @endif
                                 </td>
+
+                                {{-- Actions: only for owners/company owner/Admin --}}
                                 <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
                                     <div class="inline-flex items-center gap-1.5">
-                                        {{-- Edit (sheet) --}}
-                                        <flux:button
-                                            variant="ghost"
-                                            size="xs"
-                                            icon="pencil-square"
-                                            title="Edit"
-                                            wire:click="openEdit({{ $lg->id }})"
-                                        >
-                                            <span class="sr-only">Edit {{ $lg->title }}</span>
-                                        </flux:button>
+                                        @can('update', $lg)
+                                            {{-- NEW: Collaborators / Share --}}
+                                            <flux:button
+                                                as="a"
+                                                href="{{ route('corporate.leagues.access', $lg) }}"
+                                                variant="ghost"
+                                                size="xs"
+                                                icon="user-plus"
+                                                title="Collaborators"
+                                            >
+                                                <span class="sr-only">Manage collaborators for {{ $lg->title }}</span>
+                                            </flux:button>
 
-                                        {{-- Publish toggle --}}
-                                        <flux:button
-                                            variant="ghost"
-                                            size="xs"
-                                            icon="{{ $lg->is_published ? 'eye-slash' : 'eye' }}"
-                                            title="{{ $lg->is_published ? 'Unpublish' : 'Publish' }}"
-                                            wire:click="togglePublish({{ $lg->id }})"
-                                        >
-                                            <span class="sr-only">{{ $lg->is_published ? 'Unpublish' : 'Publish' }} {{ $lg->title }}</span>
-                                        </flux:button>
+                                            {{-- Edit settings --}}
+                                            <flux:button
+                                                variant="ghost"
+                                                size="xs"
+                                                icon="pencil-square"
+                                                title="Edit"
+                                                wire:click="openEdit({{ $lg->id }})"
+                                            >
+                                                <span class="sr-only">Edit {{ $lg->title }}</span>
+                                            </flux:button>
 
-                                        {{-- Delete --}}
-                                        <flux:button
-                                            variant="ghost"
-                                            size="xs"
-                                            icon="trash"
-                                            title="Delete"
-                                            wire:click="delete({{ $lg->id }})"
-                                            class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
-                                        >
-                                            <span class="sr-only">Delete {{ $lg->title }}</span>
-                                        </flux:button>
+                                            {{-- Publish toggle --}}
+                                            <flux:button
+                                                variant="ghost"
+                                                size="xs"
+                                                icon="{{ $lg->is_published ? 'eye-slash' : 'eye' }}"
+                                                title="{{ $lg->is_published ? 'Unpublish' : 'Publish' }}"
+                                                wire:click="togglePublish({{ $lg->id }})"
+                                            >
+                                                <span class="sr-only">{{ $lg->is_published ? 'Unpublish' : 'Publish' }} {{ $lg->title }}</span>
+                                            </flux:button>
+                                        @endcan
+
+                                        @can('delete', $lg)
+                                            {{-- Delete --}}
+                                            <flux:button
+                                                variant="ghost"
+                                                size="xs"
+                                                icon="trash"
+                                                title="Delete"
+                                                wire:click="delete({{ $lg->id }})"
+                                                class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                                            >
+                                                <span class="sr-only">Delete {{ $lg->title }}</span>
+                                            </flux:button>
+                                        @endcan
                                     </div>
                                 </td>
                             </tr>
@@ -448,7 +505,7 @@ new class extends Component
                     </tbody>
                 </table>
 
-                {{-- Pagination footer (same UX as Loadouts) --}}
+                {{-- Pagination footer --}}
                 @php($p = $this->leagues)
                 @php($w = $this->pageWindow)
                 <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
@@ -474,13 +531,13 @@ new class extends Component
 
                                 @for ($i = $w['start']; $i <= $w['end']; $i++)
                                     @if ($i === $w['current'])
-                                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:bg-indigo-500 dark:focus-visible:outline-indigo-500">{{ $i }}</span>
+                                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 dark:bg-indigo-500">{{ $i }}</span>
                                     @else
-                                        <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg:white/5">{{ $i }}</button>
+                                        <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
                                     @endif
                                 @endfor
 
-                                <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
+                                <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
                                     <span class="sr-only">Next</span>
                                     <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
                                 </button>
@@ -492,7 +549,7 @@ new class extends Component
         </div>
     </div>
 
-    {{-- Right "sheet" for create/edit (same UX as Loadouts) --}}
+    {{-- Right "sheet" for create/edit --}}
     @if($showSheet)
         <div class="fixed inset-0 z-40">
             <div class="absolute inset-0 bg-black/40" wire:click="$set('showSheet', false)"></div>
@@ -568,7 +625,7 @@ new class extends Component
                         </div>
                     </div>
 
-                    {{-- Scoring config (per league date) --}}
+                    {{-- Scoring per date --}}
                     <div class="grid gap-4 md:grid-cols-3">
                         <div>
                             <flux:label for="ends_per_day"># Ends (per date)</flux:label>
@@ -587,7 +644,7 @@ new class extends Component
                         </div>
                     </div>
 
-                    {{-- NEW: League-level scoring settings --}}
+                    {{-- League-level scoring settings --}}
                     <div class="grid gap-4 md:grid-cols-3">
                         <div>
                             <flux:label>X-ring value</flux:label>

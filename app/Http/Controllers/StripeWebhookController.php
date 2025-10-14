@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessParticipantImport;
 use App\Models\Event;
 use App\Models\League;
 use App\Models\LeagueParticipant;
 use App\Models\Order;
+use App\Models\ParticipantImport;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -48,13 +50,21 @@ class StripeWebhookController extends Controller
         ]);
 
         switch ($type) {
-            // ---- Checkout for Leagues & Events (orders) ----
+            // ---- Checkout for Leagues & Events (orders) + Participant Import ----
             case 'checkout.session.completed':
                 $this->handleSessionCompleted($obj, $connectAcct);
                 break;
 
+            case 'checkout.session.expired':
+                $this->handleSessionExpired($obj);
+                break;
+
             case 'payment_intent.succeeded':
                 $this->handlePiSucceeded($obj, $connectAcct);
+                break;
+
+            case 'payment_intent.payment_failed':
+                $this->handlePiFailed($obj);
                 break;
 
             case 'charge.succeeded':
@@ -87,12 +97,23 @@ class StripeWebhookController extends Controller
     }
 
     // ---------------------------
-    // League/Event order fulfillment
+    // League/Event order fulfillment + Participant Import
     // ---------------------------
 
     private function handleSessionCompleted($session, ?string $acct): void
     {
         $sessionId = $session->id ?? null;
+
+        // Detect kind first (participants_import piggy-backs on Checkout)
+        $kind = $this->readKind($session);
+
+        if ($kind === 'participants_import') {
+            $this->handleParticipantsImportSessionCompleted($session, $acct);
+
+            return;
+        }
+
+        // Legacy / standard league & event orders:
         $clientRef = $session->client_reference_id ?? null;
         $order = null;
 
@@ -131,10 +152,46 @@ class StripeWebhookController extends Controller
         }
     }
 
+    private function handleSessionExpired($session): void
+    {
+        // If this was a participants_import flow, mark it canceled so admin can retry.
+        $kind = $this->readKind($session);
+        if ($kind !== 'participants_import') {
+            return;
+        }
+
+        $meta = $this->toArray($session->metadata ?? null);
+        $orderId = isset($meta['order_id']) ? (int) $meta['order_id'] : null;
+        $importId = isset($meta['participant_import_id']) ? (int) $meta['participant_import_id'] : null;
+
+        if ($orderId && ($order = Order::find($orderId))) {
+            $order->status = Order::STATUS_CANCELED;
+            $order->save();
+        }
+        if ($importId && ($import = ParticipantImport::find($importId))) {
+            $import->status = 'canceled';
+            $import->save();
+        }
+
+        Log::info('participants_import: checkout.session.expired processed', [
+            'order_id' => $orderId,
+            'import_id' => $importId,
+        ]);
+    }
+
     private function handlePiSucceeded($pi, ?string $acct): void
     {
         // This PI can fire for both orders and subscriptions.
         $meta = $this->toArray($pi->metadata ?? null);
+        $kind = $meta['kind'] ?? null;
+
+        if ($kind === 'participants_import') {
+            $this->handleParticipantsImportPiSucceeded($pi, $acct);
+
+            return;
+        }
+
+        // Standard orders
         $order = null;
 
         if (! empty($meta['order_id'])) {
@@ -155,6 +212,35 @@ class StripeWebhookController extends Controller
         }
 
         $this->attachPiChargeAndMarkPaid($order, $pi->id, $acct);
+    }
+
+    private function handlePiFailed($pi): void
+    {
+        $meta = $this->toArray($pi->metadata ?? null);
+        $kind = $meta['kind'] ?? null;
+
+        if ($kind !== 'participants_import') {
+            // nothing to do for standard orders here; failures roll up to session
+            return;
+        }
+
+        $orderId = isset($meta['order_id']) ? (int) $meta['order_id'] : null;
+        $importId = isset($meta['participant_import_id']) ? (int) $meta['participant_import_id'] : null;
+
+        if ($orderId && ($order = Order::find($orderId))) {
+            $order->status = Order::STATUS_FAILED;
+            $order->save();
+        }
+        if ($importId && ($import = ParticipantImport::find($importId))) {
+            $import->status = 'failed';
+            $import->error_text = 'Payment failed.';
+            $import->save();
+        }
+
+        Log::info('participants_import: payment_intent.payment_failed processed', [
+            'order_id' => $orderId,
+            'import_id' => $importId,
+        ]);
     }
 
     private function handleChargeSucceeded($charge, ?string $acct): void
@@ -189,7 +275,12 @@ class StripeWebhookController extends Controller
         // Idempotency: already paid with same PI → just sync charge/transfer and fulfill
         if ($order->status === \App\Models\Order::STATUS_PAID && $order->stripe_payment_intent_id === $piId) {
             $this->syncChargeAndTransfer($order, $piId, $opts);
-            $this->fulfillOrder($order);
+            // For participant imports, fulfillment is different (no league/event participant).
+            if ($this->orderIsParticipantsImport($order)) {
+                $this->fulfillParticipantsImportFromOrder($order);
+            } else {
+                $this->fulfillOrder($order);
+            }
 
             return;
         }
@@ -223,7 +314,12 @@ class StripeWebhookController extends Controller
         $order->status = \App\Models\Order::STATUS_PAID;
         $order->save();
 
-        $this->fulfillOrder($order);
+        // Fulfill
+        if ($this->orderIsParticipantsImport($order)) {
+            $this->fulfillParticipantsImportFromOrder($order);
+        } else {
+            $this->fulfillOrder($order);
+        }
     }
 
     private function syncChargeAndTransfer(Order $order, string $piId, array $opts = []): void
@@ -251,6 +347,7 @@ class StripeWebhookController extends Controller
     {
         $item = $order->items()->first();
         if (! $item) {
+            // No items → nothing to fulfill (e.g. manual orders)
             return;
         }
 
@@ -631,6 +728,162 @@ class StripeWebhookController extends Controller
                 'msg' => $e->getMessage(),
             ]);
         }
+    }
+
+    // ---------------------------
+    // Participants Import flow
+    // ---------------------------
+
+    private function handleParticipantsImportSessionCompleted($session, ?string $acct): void
+    {
+        // Find Order first (we created an order shell for the import)
+        $order = $this->findOrderFromSession($session);
+        if (! $order) {
+            Log::warning('participants_import: order not found on session.completed', [
+                'session_id' => $session->id ?? null,
+                'metadata' => $this->toArray($session->metadata ?? null),
+            ]);
+
+            return;
+        }
+
+        $piId = is_string($session->payment_intent ?? null)
+            ? $session->payment_intent
+            : ($session->payment_intent->id ?? null);
+
+        if (! $piId) {
+            Log::warning('participants_import: no payment_intent on session', [
+                'order_id' => $order->id,
+                'session_id' => $session->id ?? null,
+            ]);
+
+            return;
+        }
+
+        // Mark Order as paid + then fulfill import
+        $this->attachPiChargeAndMarkPaid($order, $piId, $acct);
+        // (attachPiChargeAndMarkPaid will route to fulfillParticipantsImportFromOrder when it detects the "kind")
+    }
+
+    private function handleParticipantsImportPiSucceeded($pi, ?string $acct): void
+    {
+        $meta = $this->toArray($pi->metadata ?? null);
+        $orderId = isset($meta['order_id']) ? (int) $meta['order_id'] : null;
+
+        if (! $orderId) {
+            // a PI without order_id shouldn't happen for imports, but guard anyway
+            Log::warning('participants_import: PI succeeded but no order_id in metadata', ['pi' => $pi->id ?? null, 'meta' => $meta]);
+
+            return;
+        }
+
+        $order = Order::find($orderId);
+        if (! $order) {
+            Log::warning('participants_import: PI succeeded but order not found', ['order_id' => $orderId]);
+
+            return;
+        }
+
+        $this->attachPiChargeAndMarkPaid($order, $pi->id, $acct);
+        // (attachPiChargeAndMarkPaid will route appropriately)
+    }
+
+    private function fulfillParticipantsImportFromOrder(Order $order): void
+    {
+        $meta = (array) ($order->meta_json ?? []);
+        $importId = isset($meta['participant_import_id']) ? (int) $meta['participant_import_id'] : null;
+
+        if (! $importId) {
+            // try via associated checkout session metadata if present
+            $import = $this->findImportByOrderOrPi($order);
+        } else {
+            $import = ParticipantImport::find($importId);
+        }
+
+        if (! $import) {
+            Log::warning('participants_import: fulfillment import not found', ['order_id' => $order->id, 'meta' => $meta]);
+
+            return;
+        }
+
+        // Mark as paid and kick off processing if not already processed
+        if ($import->status !== 'paid') {
+            $import->status = 'paid';
+            $import->stripe_checkout_session_id = $order->stripe_checkout_session_id ?: ($import->stripe_checkout_session_id ?? null);
+            $import->stripe_payment_intent_id = $order->stripe_payment_intent_id ?: ($import->stripe_payment_intent_id ?? null);
+            $import->save();
+        }
+
+        if ($import->processed_at === null && $import->status === 'paid') {
+            dispatch(new ProcessParticipantImport($import->id));
+        }
+    }
+
+    private function findImportByOrderOrPi(Order $order): ?ParticipantImport
+    {
+        if ($order->meta_json && ! empty($order->meta_json['participant_import_id'])) {
+            $candidate = ParticipantImport::find((int) $order->meta_json['participant_import_id']);
+            if ($candidate) {
+                return $candidate;
+            }
+        }
+
+        if ($order->stripe_checkout_session_id) {
+            $found = ParticipantImport::where('stripe_checkout_session_id', $order->stripe_checkout_session_id)->first();
+            if ($found) {
+                return $found;
+            }
+        }
+
+        if ($order->stripe_payment_intent_id) {
+            $found = ParticipantImport::where('stripe_payment_intent_id', $order->stripe_payment_intent_id)->first();
+            if ($found) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    private function orderIsParticipantsImport(Order $order): bool
+    {
+        // No meta_json in your schema. Detect by presence of a matching ParticipantImport.
+        if (class_exists(\App\Models\ParticipantImport::class)) {
+            $import = $this->findImportByOrderOrPi($order);
+
+            return (bool) $import;
+        }
+
+        return false;
+    }
+
+    private function findOrderFromSession($session): ?Order
+    {
+        $clientRef = $session->client_reference_id ?? null;
+        $sessionId = $session->id ?? null;
+        $order = null;
+
+        if ($clientRef) {
+            $order = Order::find((int) $clientRef);
+        }
+        if (! $order && $sessionId) {
+            $order = Order::where('stripe_checkout_session_id', $sessionId)->first();
+        }
+        if (! $order) {
+            $meta = $this->toArray($session->metadata ?? null);
+            if (! empty($meta['order_id'])) {
+                $order = Order::find((int) $meta['order_id']);
+            }
+        }
+
+        return $order;
+    }
+
+    private function readKind($stripeObj): ?string
+    {
+        $meta = $this->toArray($stripeObj->metadata ?? null);
+
+        return $meta['kind'] ?? null;
     }
 
     // ---------------------------

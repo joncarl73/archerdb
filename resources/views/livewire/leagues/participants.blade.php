@@ -1,6 +1,6 @@
 <?php
 use App\Models\League;
-use App\Models\LeagueParticipant;
+use App\Models\ParticipantImport;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Volt\Component;
@@ -98,7 +98,14 @@ new class extends Component
         $this->showCsvSheet = true;
     }
 
-    public function importCsv(): void
+    /**
+     * Stage the CSV for paywalled import:
+     * - store privately
+     * - count valid rows (non-empty first/last/email)
+     * - create ParticipantImport
+     * - redirect to confirm & pay page
+     */
+    public function stageImportCsv()
     {
         Gate::authorize('update', $this->league);
 
@@ -113,105 +120,212 @@ new class extends Component
             'csv' => ['required', 'file', 'mimes:csv,txt', 'max:10240'],
         ]);
 
-        $path = $this->csv->store('tmp');
-        $full = Storage::path($path);
+        // Store privately with original name + timestamp
+        $storedPath = $this->csv->storeAs(
+            'private/participant-imports',
+            now()->format('Ymd_His').'_'.$this->csv->getClientOriginalName()
+        );
 
-        $handle = fopen($full, 'r');
-        if (! $handle) {
+        $stream = Storage::readStream($storedPath);
+        if (! $stream) {
+            Storage::delete($storedPath);
             $this->addError('csv', 'Unable to read uploaded file.');
 
             return;
         }
 
-        $headers = fgetcsv($handle);
-        $map = $this->normalizeHeaders($headers);
+        // --- Parse headers and rows ---
+        $headers = fgetcsv($stream) ?: [];
+        $map = $this->normalizeHeaders($headers); // expects first_name,last_name,email
 
-        $created = 0;
-        $updated = 0;
-        $skipped = 0;
+        // Collect CSV rows (dedup within the same CSV)
+        $csvKeys = [];          // set of canonical keys found in this CSV
+        $csvRows = [];          // [{first,last,email,key}]
+        $rawRowCount = 0;       // rows with any non-empty cell (for UX/debug)
 
-        while (($row = fgetcsv($handle)) !== false) {
-            $data = $this->rowToAssoc($map, $row);
-            $first = trim((string) ($data['first_name'] ?? ''));
-            $last = trim((string) ($data['last_name'] ?? ''));
-            $email = trim((string) ($data['email'] ?? ''));
+        while (($row = fgetcsv($stream)) !== false) {
+            $joined = implode('', array_map(fn ($v) => trim((string) $v), $row));
+            if ($joined === '') {
+                continue; // skip blank lines
+            }
+            $rawRowCount++;
 
-            if ($first === '' && $last === '') {
-                $skipped++;
+            // map row -> assoc
+            $assoc = [];
+            foreach ($map as $i => $key) {
+                $assoc[$key] = trim((string) ($row[$i] ?? ''));
+            }
+            $first = (string) ($assoc['first_name'] ?? '');
+            $last = (string) ($assoc['last_name'] ?? '');
+            $email = (string) ($assoc['email'] ?? '');
 
+            // ignore rows with no data in all three key fields
+            if ($first === '' && $last === '' && $email === '') {
                 continue;
             }
 
-            // Closed league requires membership
-            $userId = null;
-            if ($email !== '') {
-                $userId = optional(\App\Models\User::where('email', $email)->first())->id;
-                if (($this->league->type->value ?? $this->league->type) === 'closed' && ! $userId) {
-                    $skipped++;
+            $key = $this->canonicalParticipantKey($first, $last, $email);
+            if (isset($csvKeys[$key])) {
+                continue; // de-duplicate within this CSV
+            }
+            $csvKeys[$key] = true;
+            $csvRows[] = compact('first', 'last', 'email', 'key');
+        }
 
-                    continue;
+        if (is_resource($stream)) {
+            fclose($stream);
+        }
+
+        if (count($csvRows) === 0) {
+            Storage::delete($storedPath);
+            $this->addError('csv', 'No participant rows detected. Please check your CSV headers and content.');
+
+            return;
+        }
+
+        // --- Build "existing" sets from DB for fast membership checks ---
+        // 1) emails present in CSV
+        $emails = array_values(array_filter(array_map(fn ($r) => $r['email'] ?: null, $csvRows)));
+        $emails = array_values(array_unique($emails));
+
+        // 2) name-only rows (no email)
+        $nameOnlyPairs = array_values(array_unique(array_map(
+            fn ($r) => $r['email'] === '' ? mb_strtolower(trim($r['first'])).'|'.mb_strtolower(trim($r['last'])) : null,
+            $csvRows
+        )));
+        $nameOnlyPairs = array_values(array_filter($nameOnlyPairs));
+
+        // Query existing participants for this league in 2 passes
+        $existingEmailSet = [];
+        if (! empty($emails)) {
+            $existingEmails = $this->league->participants()
+                ->whereIn('email', $emails)
+                ->pluck('email')
+                ->all();
+            foreach ($existingEmails as $e) {
+                if ($e !== null && $e !== '') {
+                    $existingEmailSet[mb_strtolower(trim($e))] = true;
                 }
-            } elseif (($this->league->type->value ?? $this->league->type) === 'closed') {
-                $skipped++;
-
-                continue;
-            }
-
-            $existing = null;
-            if ($email !== '') {
-                $existing = LeagueParticipant::where('league_id', $this->league->id)->where('email', $email)->first();
-            } else {
-                $existing = LeagueParticipant::where('league_id', $this->league->id)
-                    ->whereNull('email')->where('first_name', $first)->where('last_name', $last)->first();
-            }
-
-            if ($existing) {
-                $existing->update(['first_name' => $first, 'last_name' => $last, 'user_id' => $userId]);
-                $updated++;
-            } else {
-                LeagueParticipant::create([
-                    'league_id' => $this->league->id, 'user_id' => $userId,
-                    'first_name' => $first, 'last_name' => $last, 'email' => $email !== '' ? $email : null,
-                ]);
-                $created++;
             }
         }
 
-        fclose($handle);
-        @unlink($full);
+        $existingNameOnlySet = [];
+        if (! empty($nameOnlyPairs)) {
+            // Pull all null-email participants once, then index in PHP by first|last
+            $nullEmailParticipants = $this->league->participants()
+                ->whereNull('email')
+                ->get(['first_name', 'last_name']);
 
-        $this->league->load('participants');
+            foreach ($nullEmailParticipants as $p) {
+                $k = mb_strtolower(trim((string) $p->first_name)).'|'.mb_strtolower(trim((string) $p->last_name));
+                $existingNameOnlySet[$k] = true;
+            }
+        }
+
+        // --- Count only NEW/billable rows ---
+        $billable = 0;
+        foreach ($csvRows as $r) {
+            if ($r['email'] !== '') {
+                $exists = isset($existingEmailSet[mb_strtolower(trim($r['email']))]);
+            } else {
+                $k = mb_strtolower(trim($r['first'])).'|'.mb_strtolower(trim($r['last']));
+                $exists = isset($existingNameOnlySet[$k]);
+            }
+            if (! $exists) {
+                $billable++;
+            }
+        }
+
+        if ($billable === 0) {
+            // Nothing new to add — don’t create a staged import
+            Storage::delete($storedPath);
+            $this->dispatch('toast', type: 'info', message: 'No new participants detected — nothing to charge.');
+            $this->showCsvSheet = false;
+            $this->csv = null;
+
+            return;
+        }
+
+        // Create staged import with $2.00 per NEW participant
+        $import = ParticipantImport::create([
+            'league_id' => $this->league->id,
+            'user_id' => auth()->id(),
+            'file_path' => $storedPath,
+            'original_name' => $this->csv->getClientOriginalName(),
+            'row_count' => $billable,         // ✅ only new participants are billable
+            'amount_cents' => $billable * 200,   // $2 per new participant
+            'currency' => 'usd',
+            'status' => 'pending_payment',
+            // If your table has extra columns (e.g. raw_row_count), you can store $rawRowCount too.
+        ]);
+
+        // Close drawer and clear file handle
         $this->showCsvSheet = false;
         $this->csv = null;
 
-        $this->dispatch('toast', type: 'success',
-            message: "Import complete — created {$created}, updated {$updated}, skipped {$skipped}."
-        );
+        // Send them to confirm & pay
+        return redirect()->route('corporate.leagues.participants.import.confirm', [
+            'league' => $this->league->id,
+            'import' => $import->id,
+        ]);
     }
 
     private function normalizeHeaders(?array $headers): array
     {
+        // map CSV indexes → expected keys: first_name,last_name,email
         $map = [];
         if (! $headers) {
-            return $map;
+            // Assume positional if no header row
+            return [0 => 'first_name', 1 => 'last_name', 2 => 'email'];
         }
+
+        $expected = [
+            'first_name' => ['first_name', 'first name', 'first', 'firstname', 'given', 'given_name', 'given name'],
+            'last_name' => ['last_name', 'last name', 'last', 'lastname', 'surname', 'family', 'family_name', 'family name'],
+            'email' => ['email', 'e-mail', 'mail'],
+        ];
+
         foreach ($headers as $i => $h) {
-            $k = strtolower(trim((string) $h));
-            $k = str_replace([' ', '-'], '_', $k);
-            $map[$i] = $k; // expected: first_name,last_name,email
+            $k = mb_strtolower(trim((string) $h));
+            $k = str_replace(['-', ' '], '_', $k);
+            foreach ($expected as $target => $aliases) {
+                if ($k === $target || in_array($k, $aliases, true)) {
+                    $map[$i] = $target;
+
+                    continue 2;
+                }
+            }
+            // ignore unknown columns
         }
+
+        // Ensure all three keys have a mapping; fallback by position if needed
+        if (! in_array('first_name', $map, true)) {
+            $map[0] = 'first_name';
+        }
+        if (! in_array('last_name', $map, true)) {
+            $map[1] = 'last_name';
+        }
+        if (! in_array('email', $map, true)) {
+            $map[2] = 'email';
+        }
+
+        ksort($map);
 
         return $map;
     }
 
-    private function rowToAssoc(array $map, array $row): array
+    private function canonicalParticipantKey(string $first, string $last, string $email): string
     {
-        $out = [];
-        foreach ($map as $i => $key) {
-            $out[$key] = $row[$i] ?? null;
+        $e = mb_strtolower(trim($email));
+        if ($e !== '') {
+            return 'email:'.$e;
         }
 
-        return $out;
+        // No email → use name tuple
+        $f = mb_strtolower(trim($first));
+        $l = mb_strtolower(trim($last));
+
+        return 'name:'.$f.'|'.$l;
     }
 };
 ?>
@@ -331,7 +445,7 @@ new class extends Component
                                 @if ($i === $w['current'])
                                     <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:bg-indigo-500 dark:focus-visible:outline-indigo-500">{{ $i }}</span>
                                 @else
-                                    <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
+                                    <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg:white/5">{{ $i }}</button>
                                 @endif
                             @endfor
                             <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
@@ -356,7 +470,7 @@ new class extends Component
                                 wire:click="$set('showCsvSheet', false)">✕</button>
                     </div>
 
-                    <form wire:submit.prevent="importCsv" class="mt-6 space-y-6">
+                    <form wire:submit.prevent="stageImportCsv" class="mt-6 space-y-6">
                         <div>
                             <flux:label for="csv">CSV file</flux:label>
                             <input id="csv" type="file" wire:model="csv" accept=".csv,text/csv" class="mt-1 block w-full text-sm" />
@@ -366,7 +480,7 @@ new class extends Component
 
                         <div class="flex justify-end gap-3">
                             <flux:button type="button" variant="ghost" wire:click="$set('showCsvSheet', false)">Cancel</flux:button>
-                            <flux:button type="submit" variant="primary">Import</flux:button>
+                            <flux:button type="submit" variant="primary">Upload & Review</flux:button>
                         </div>
                     </form>
                 </div>

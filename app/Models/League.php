@@ -15,7 +15,7 @@ class League extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'public_uuid', 'owner_id', 'title', 'location', 'length_weeks', 'day_of_week', 'start_date', 'type', 'is_published', 'is_archived', 'price_cents', 'currency', 'stripe_account_id', 'stripe_product_id', 'stripe_price_id', 'lanes_count', 'lane_breakdown', 'ends_per_day', 'arrows_per_end', 'x_ring_value', 'scoring_mode', 'registration_start_date', 'registration_end_date',
+        'public_uuid', 'owner_id', 'company_id', 'title', 'location', 'length_weeks', 'day_of_week', 'start_date', 'type', 'is_published', 'is_archived', 'price_cents', 'currency', 'stripe_account_id', 'stripe_product_id', 'stripe_price_id', 'lanes_count', 'lane_breakdown', 'ends_per_day', 'arrows_per_end', 'x_ring_value', 'scoring_mode', 'registration_start_date', 'registration_end_date',
     ];
 
     protected $casts = [
@@ -112,5 +112,17 @@ class League extends Model
     public function info()
     {
         return $this->hasOne(\App\Models\LeagueInfo::class);
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(\App\Models\Company::class);
+    }
+
+    public function collaborators()
+    {
+        return $this->belongsToMany(\App\Models\User::class, 'league_users')
+            ->withPivot('role')
+            ->withTimestamps();
     }
 }

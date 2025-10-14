@@ -4,6 +4,7 @@
 use App\Http\Controllers\CheckoutReturnController;
 use App\Http\Controllers\LeagueQrController;
 use App\Http\Controllers\ManageProPortalController;
+use App\Http\Controllers\ParticipantImportReturnController;
 use App\Http\Controllers\ProLandingController;
 use App\Http\Controllers\ProReturnController;
 use App\Http\Controllers\PublicCheckinController;
@@ -12,6 +13,7 @@ use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
 use App\Http\Controllers\StartConnectForCurrentSellerController;
 use App\Http\Controllers\StartLeagueCheckoutController;
+use App\Http\Controllers\StartParticipantImportCheckoutController;
 use App\Http\Controllers\StartProCheckoutController;
 use App\Http\Controllers\StripeReturnController;
 use App\Http\Controllers\StripeWebhookController;
@@ -115,6 +117,32 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
         Volt::route('leagues/{league}/participants', 'leagues.participants')
             ->Name('leagues.participants.index')
             ->whereNumber('league');
+
+        Volt::route(
+            'leagues/{league}/participants/import/confirm/{import}',
+            'corporate.leagues.participants.import-confirm'
+        )->name('leagues.participants.import.confirm')
+            ->whereNumber('league')
+            ->whereNumber('import');
+
+        // ✅ Start Checkout (controller)
+        Route::post(
+            'leagues/{league}/participants/import/{import}/start-checkout',
+            StartParticipantImportCheckoutController::class
+        )->name('leagues.participants.import.startCheckout')
+            ->whereNumber('league')
+            ->whereNumber('import');
+
+        // ✅ Return page (controller → blade)
+        Route::get(
+            'leagues/{league}/participants/import/return',
+            ParticipantImportReturnController::class
+        )->name('leagues.participants.import.return')
+            ->whereNumber('league');
+
+        // Company & League Access
+        Volt::route('companies/{company}/members', 'corporate.company.members')->name('companies.members');
+        Volt::route('leagues/{league}/access', 'corporate.leagues.access')->name('leagues.access');
 
         // CSV template download
         Route::get('leagues/{league}/participants/template.csv', function (League $league) {

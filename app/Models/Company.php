@@ -26,4 +26,9 @@ class Company extends Model
     {
         return $this->belongsTo(User::class, 'owner_user_id');
     }
+
+    public function leagues(): HasMany
+    {
+        return $this->hasMany(\App\Models\League::class);
+    }
 }

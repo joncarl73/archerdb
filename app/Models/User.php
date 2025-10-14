@@ -127,4 +127,25 @@ class User extends Authenticatable
     {
         return $this->role === 'corporate';
     }
+
+    public function isCompanyOwner(?int $companyId): bool
+    {
+        if (! $companyId) {
+            return false;
+        }
+
+        return \App\Models\Company::query()
+            ->where('id', $companyId)
+            ->where('owner_user_id', $this->id)
+            ->exists();
+    }
+
+    public function leagueRole(int $leagueId): ?string
+    {
+        $row = \DB::table('league_users')
+            ->where(['league_id' => $leagueId, 'user_id' => $this->id])
+            ->first();
+
+        return $row?->role;
+    }
 }
