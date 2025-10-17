@@ -76,10 +76,10 @@ new class extends Component
         $owner = $this->league->owner()->first();
         $role = $this->normalizeRole($owner?->role);
 
-        // Determine seller + platform fee
+        // Determine seller + platform flat fee (cents)
         $sellerId = null;
-        $feeBps = 0;
         $sellerStripe = null;
+        $flatFeeCents = 0;
 
         if ($role === 'corporate') {
             $seller = \App\Models\Seller::firstOrCreate(
@@ -87,7 +87,7 @@ new class extends Component
                 ['name' => $owner->name.' — Organizer']
             );
 
-            // If they haven't onboarded yet, we can't create catalog on their account
+            // Organizer must be onboarded to Stripe for closed/paid events
             if (empty($seller->stripe_account_id)) {
                 throw \Illuminate\Validation\ValidationException::withMessages([
                     'title' => 'This is a paid (closed) event, but the organizer is not connected to Stripe yet. Please complete Stripe onboarding first.',
@@ -96,11 +96,14 @@ new class extends Component
 
             $sellerId = $seller->id;
             $sellerStripe = $seller->stripe_account_id;
-            $feeBps = (int) ($seller->default_platform_fee_bps ?? config('payments.default_platform_fee_bps', 500));
+
+            // NEW: pull default flat fee (cents) from seller or config
+            $flatFeeCents = (int) ($seller->default_platform_fee_cents
+                ?? config('payments.default_platform_fee_cents', 150));
         } else {
-            // Admin/internal: platform seller, 0 bps (platform keeps full)
+            // Admin/internal: use platform seller; platform keeps full (fee applied at checkout as needed)
             $sellerId = $this->getPlatformSellerId();
-            $feeBps = 0;
+            $flatFeeCents = (int) (config('payments.default_platform_fee_cents', 150));
             $sellerStripe = null; // create catalog on platform account
         }
 
@@ -120,13 +123,19 @@ new class extends Component
             'is_active' => true,
         ]);
 
-        if (is_null($product->platform_fee_bps)) {
-            $product->platform_fee_bps = $feeBps;
+        // NEW: set per-product flat fee cents (once), if not already present
+        if (is_null($product->platform_fee_cents)) {
+            $product->platform_fee_cents = max(0, (int) $flatFeeCents);
         }
+
+        // (Legacy bps preserved but unused going forward)
+        // if (is_null($product->platform_fee_bps)) {
+        //     $product->platform_fee_bps = 0;
+        // }
 
         $product->save();
 
-        // ⬇️ Ensure Stripe Product/Price exist on the correct account & persist on league
+        // Ensure Stripe Product/Price exist on the correct account & persist on league
         $this->ensureStripeCatalog($product, $sellerStripe);
     }
 
@@ -138,7 +147,9 @@ new class extends Component
 
         $opts = [];
         if (! empty($connectedAccountId)) {
-            $opts['stripe_account'] = $connectedAccountId; // direct charge account
+            // Keep creating catalog on the connected account to match existing behavior.
+            // (Destination charges at checkout will still work correctly.)
+            $opts['stripe_account'] = $connectedAccountId;
         }
 
         $league = $this->league;
@@ -210,6 +221,8 @@ new class extends Component
             ['owner_id' => $owner->id],
             [
                 'name' => (config('app.name', 'ArcherDB').' — Platform'),
+                // NEW: seed flat fee cents; keep bps=0 for compatibility
+                'default_platform_fee_cents' => (int) config('payments.default_platform_fee_cents', 150),
                 'default_platform_fee_bps' => 0,
                 'active' => true,
             ]
@@ -433,6 +446,7 @@ new class extends Component
         $this->dispatch('toast', type: 'success', message: 'Banner removed.');
     }
 }; ?>
+
 
 
 <section class="w-full">

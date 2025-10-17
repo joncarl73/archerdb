@@ -1,6 +1,7 @@
 <?php
 use App\Models\League;
 use App\Models\ParticipantImport;
+use App\Services\PricingService;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Volt\Component;
@@ -29,9 +30,10 @@ new class extends Component
     public function mount(League $league): void
     {
         Gate::authorize('view', $league);
-        $this->league = $league; // no weeks needed here
+        $this->league = $league;
     }
 
+    // pagination helpers
     public function updatingSearch(): void
     {
         $this->resetPage($this->pageName);
@@ -52,10 +54,12 @@ new class extends Component
         $this->nextPage($this->pageName);
     }
 
+    /** Paged participants list */
     public function getParticipantsProperty()
     {
         $base = $this->league->participants()
-            ->when($this->search, fn ($q) => $q->where(fn ($w) => $w->where('first_name', 'like', "%{$this->search}%")
+            ->when($this->search, fn ($q) => $q->where(fn ($w) => $w
+                ->where('first_name', 'like', "%{$this->search}%")
                 ->orWhere('last_name', 'like', "%{$this->search}%")
                 ->orWhere('email', 'like', "%{$this->search}%")
             ))
@@ -64,6 +68,7 @@ new class extends Component
 
         $total = (clone $base)->count();
         $lastPage = max(1, (int) ceil($total / $this->perPage));
+
         $requested = (int) ($this->paginators[$this->pageName] ?? 1);
         $page = min(max(1, $requested), $lastPage);
         if ($requested !== $page) {
@@ -73,6 +78,7 @@ new class extends Component
         return $base->paginate($this->perPage, ['*'], $this->pageName, $page);
     }
 
+    /** Pager window for desktop buttons */
     public function getPageWindowProperty(): array
     {
         $p = $this->participants;
@@ -85,6 +91,7 @@ new class extends Component
         return compact('current', 'last', 'start', 'end');
     }
 
+    /** Open the upload drawer (disallowed for closed leagues) */
     public function openCsv(): void
     {
         Gate::authorize('update', $this->league);
@@ -99,10 +106,11 @@ new class extends Component
     }
 
     /**
-     * Stage the CSV for paywalled import:
+     * Stage the CSV for paywalled import using company pricing:
      * - store privately
-     * - count valid rows (non-empty first/last/email)
-     * - create ParticipantImport
+     * - count ONLY new participants (dedup + existing filtered)
+     * - determine unit price via PricingService (league context)
+     * - create ParticipantImport with unit & total
      * - redirect to confirm & pay page
      */
     public function stageImportCsv()
@@ -134,27 +142,25 @@ new class extends Component
             return;
         }
 
-        // --- Parse headers and rows ---
+        // --- Parse headers and rows
         $headers = fgetcsv($stream) ?: [];
         $map = $this->normalizeHeaders($headers); // expects first_name,last_name,email
 
-        // Collect CSV rows (dedup within the same CSV)
-        $csvKeys = [];          // set of canonical keys found in this CSV
-        $csvRows = [];          // [{first,last,email,key}]
-        $rawRowCount = 0;       // rows with any non-empty cell (for UX/debug)
-
+        // Collect CSV rows (dedup within the same CSV by email or name pair when email missing)
+        $csvKeys = [];   // set of canonical keys found in this CSV
+        $csvRows = [];   // [{first,last,email,key}]
         while (($row = fgetcsv($stream)) !== false) {
             $joined = implode('', array_map(fn ($v) => trim((string) $v), $row));
             if ($joined === '') {
                 continue; // skip blank lines
             }
-            $rawRowCount++;
 
             // map row -> assoc
             $assoc = [];
             foreach ($map as $i => $key) {
                 $assoc[$key] = trim((string) ($row[$i] ?? ''));
             }
+
             $first = (string) ($assoc['first_name'] ?? '');
             $last = (string) ($assoc['last_name'] ?? '');
             $email = (string) ($assoc['email'] ?? '');
@@ -183,7 +189,7 @@ new class extends Component
             return;
         }
 
-        // --- Build "existing" sets from DB for fast membership checks ---
+        // --- Build "existing" sets from DB for fast membership checks
         // 1) emails present in CSV
         $emails = array_values(array_filter(array_map(fn ($r) => $r['email'] ?: null, $csvRows)));
         $emails = array_values(array_unique($emails));
@@ -195,7 +201,6 @@ new class extends Component
         )));
         $nameOnlyPairs = array_values(array_filter($nameOnlyPairs));
 
-        // Query existing participants for this league in 2 passes
         $existingEmailSet = [];
         if (! empty($emails)) {
             $existingEmails = $this->league->participants()
@@ -211,7 +216,6 @@ new class extends Component
 
         $existingNameOnlySet = [];
         if (! empty($nameOnlyPairs)) {
-            // Pull all null-email participants once, then index in PHP by first|last
             $nullEmailParticipants = $this->league->participants()
                 ->whereNull('email')
                 ->get(['first_name', 'last_name']);
@@ -222,7 +226,7 @@ new class extends Component
             }
         }
 
-        // --- Count only NEW/billable rows ---
+        // --- Count only NEW/billable rows
         $billable = 0;
         foreach ($csvRows as $r) {
             if ($r['email'] !== '') {
@@ -237,7 +241,6 @@ new class extends Component
         }
 
         if ($billable === 0) {
-            // Nothing new to add — don’t create a staged import
             Storage::delete($storedPath);
             $this->dispatch('toast', type: 'info', message: 'No new participants detected — nothing to charge.');
             $this->showCsvSheet = false;
@@ -246,33 +249,38 @@ new class extends Component
             return;
         }
 
-        // Create staged import with $2.00 per NEW participant
+        // ✅ Pricing from company tier (single source of truth)
+        $company = $this->league->company ?? null;
+        $unit = PricingService::participantFeeCents($company, 'league'); // cents
+        $currency = PricingService::currency($company);
+
+        // Create staged import with company-tiered price (unit × billable)
         $import = ParticipantImport::create([
             'league_id' => $this->league->id,
             'user_id' => auth()->id(),
             'file_path' => $storedPath,
             'original_name' => $this->csv->getClientOriginalName(),
-            'row_count' => $billable,         // ✅ only new participants are billable
-            'amount_cents' => $billable * 200,   // $2 per new participant
-            'currency' => 'usd',
+            'row_count' => $billable,             // only new participants are billable
+            'unit_price_cents' => $unit,                 // per company tier
+            'amount_cents' => $billable * $unit,     // derived total
+            'currency' => $currency,
             'status' => 'pending_payment',
-            // If your table has extra columns (e.g. raw_row_count), you can store $rawRowCount too.
         ]);
 
-        // Close drawer and clear file handle
+        // Close drawer and clear file
         $this->showCsvSheet = false;
         $this->csv = null;
 
-        // Send them to confirm & pay
+        // Off you go—confirm & pay!
         return redirect()->route('corporate.leagues.participants.import.confirm', [
             'league' => $this->league->id,
             'import' => $import->id,
         ]);
     }
 
+    /** Map CSV indexes → expected keys: first_name,last_name,email */
     private function normalizeHeaders(?array $headers): array
     {
-        // map CSV indexes → expected keys: first_name,last_name,email
         $map = [];
         if (! $headers) {
             // Assume positional if no header row
@@ -314,14 +322,13 @@ new class extends Component
         return $map;
     }
 
+    /** Canonical key: email (if present) else "first|last" */
     private function canonicalParticipantKey(string $first, string $last, string $email): string
     {
         $e = mb_strtolower(trim($email));
         if ($e !== '') {
             return 'email:'.$e;
         }
-
-        // No email → use name tuple
         $f = mb_strtolower(trim($first));
         $l = mb_strtolower(trim($last));
 
@@ -332,8 +339,8 @@ new class extends Component
 
 <section class="w-full">
     @php
-        $typeVal   = ($league->type->value ?? $league->type);
-        $isClosed  = ($typeVal === 'closed');
+        $typeVal  = ($league->type->value ?? $league->type);
+        $isClosed = ($typeVal === 'closed');
     @endphp
 
     <div class="mx-auto max-w-7xl">

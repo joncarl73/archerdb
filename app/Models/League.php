@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\LaneBreakdown;
 use App\Enums\LeagueType;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -12,7 +13,7 @@ use Illuminate\Support\Str;
 
 class League extends Model
 {
-    use SoftDeletes;
+    use HasFactory,SoftDeletes;
 
     protected $fillable = [
         'public_uuid', 'owner_id', 'company_id', 'title', 'location', 'length_weeks', 'day_of_week', 'start_date', 'type', 'is_published', 'is_archived', 'price_cents', 'currency', 'stripe_account_id', 'stripe_product_id', 'stripe_price_id', 'lanes_count', 'lane_breakdown', 'ends_per_day', 'arrows_per_end', 'x_ring_value', 'scoring_mode', 'registration_start_date', 'registration_end_date',

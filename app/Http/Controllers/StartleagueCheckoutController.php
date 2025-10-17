@@ -64,13 +64,19 @@ class StartLeagueCheckoutController extends Controller
             ]);
         }
 
-        // Seller + fees
+        // Seller + flat fee (cents)
         $seller = $product->seller;                  // null for internal/admin
-        $sellerStripe = $seller?->stripe_account_id; // acct_... for corporate
-        $feeBps = $product->platform_fee_bps
-                 ?? ($seller?->default_platform_fee_bps)
-                 ?? (int) config('payments.default_platform_fee_bps', 0);
-        $applicationFee = (int) floor(($product->price_cents * max(0, $feeBps)) / 10000);
+        $sellerStripe = $seller?->stripe_account_id;       // acct_... for corporate
+
+        // Flat fee selection: product → seller default → config
+        $flatFeeCents = $product->platform_fee_cents
+            ?? ($seller?->default_platform_fee_cents)
+            ?? (int) config('payments.default_platform_fee_cents', 0);
+
+        $flatFeeCents = max(0, (int) $flatFeeCents);
+        $applicationFee = $sellerStripe
+            ? min($flatFeeCents, (int) $product->price_cents)  // do not exceed price
+            : 0;
 
         // Create Order first
         $order = Order::create([
@@ -79,11 +85,11 @@ class StartLeagueCheckoutController extends Controller
             'buyer_email' => Auth::user()->email,
             'currency' => strtoupper($product->currency),
             'subtotal_cents' => (int) $product->price_cents,
-            'application_fee_cents' => $sellerStripe ? $applicationFee : 0,
+            'application_fee_cents' => $applicationFee,
             'total_cents' => (int) $product->price_cents,
             'status' => \App\Models\Order::STATUS_INITIATED,
             'stripe_checkout_session_id' => null,
-            'stripe_connected_account_id' => $sellerStripe,
+            'stripe_connected_account_id' => $sellerStripe, // for downstream reconciliation
         ]);
 
         $order->items()->create([
@@ -119,6 +125,9 @@ class StartLeagueCheckoutController extends Controller
         $successUrl = route('checkout.return').'?session_id={CHECKOUT_SESSION_ID}';
         $cancelUrl = route('public.league.info', ['uuid' => $league->public_uuid]);
 
+        // DIRECT CHARGES:
+        // - Create the PaymentIntent on the connected account (so THEY pay Stripe processing fees)
+        // - Still collect your platform fee via application_fee_amount
         $payload = [
             'mode' => 'payment',
             'line_items' => [$lineItem],
@@ -127,14 +136,18 @@ class StartLeagueCheckoutController extends Controller
             'metadata' => $meta,
             'payment_intent_data' => [
                 'metadata' => $meta,
+                // application_fee_amount is allowed for direct charges; Stripe deducts this for the platform
+                'application_fee_amount' => $applicationFee,
             ],
             'success_url' => $successUrl,
             'cancel_url' => $cancelUrl,
         ];
 
+        // IMPORTANT:
+        // For DIRECT CHARGES, pass stripe_account in request options.
+        // DO NOT set transfer_data[destination] here (that would be destination charges).
         $createOpts = [];
         if ($sellerStripe) {
-            $payload['payment_intent_data']['application_fee_amount'] = $applicationFee;
             $createOpts['stripe_account'] = $sellerStripe;
         }
 

@@ -4,12 +4,15 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Company extends Model
 {
+    use HasFactory;
+
     protected $fillable = [
         'owner_user_id',
         'company_name', 'legal_name', 'website', 'support_email', 'phone',
@@ -30,5 +33,10 @@ class Company extends Model
     public function leagues(): HasMany
     {
         return $this->hasMany(\App\Models\League::class);
+    }
+
+    public function pricingTier()
+    {
+        return $this->belongsTo(\App\Models\PricingTier::class);
     }
 }

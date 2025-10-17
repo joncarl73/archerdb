@@ -87,6 +87,8 @@ Route::middleware(['auth', 'admin'])
     ->group(function () {
         Volt::route('users', 'admin.users')->name('users');
         Volt::route('manufacturers', 'admin.manufacturers')->name('manufacturers');
+        Volt::route('pricing-tiers', 'admin.pricing-tiers.index')->name('pricing.tiers.index');
+        Volt::route('companies/pricing', 'admin.company-pricing.index')->name('companies.pricing.index');
     });
 
 // Stop Impersonation Route

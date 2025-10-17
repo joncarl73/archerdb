@@ -14,6 +14,7 @@ class ParticipantImport extends Model
         'file_path',
         'original_name',
         'row_count',
+        'unit_price_cents',
         'amount_cents',
         'currency',
         'status',
