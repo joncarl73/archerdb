@@ -113,6 +113,20 @@
                         >Users</flux:navlist.item>
 
                         <flux:navlist.item
+                            icon="currency-dollar"
+                            :href="route('admin.pricing.tiers.index')"
+                            :current="request()->routeIs('admin.pricing.tiers.index')"
+                            wire:navigate
+                        >Price Tiers</flux:navlist.item>
+
+                        <flux:navlist.item
+                            icon="building-storefront"
+                            :href="route('admin.companies.pricing.index')"
+                            :current="request()->routeIs('admin.companies.pricing.index')"
+                            wire:navigate
+                        >Companies</flux:navlist.item>
+
+                        <flux:navlist.item
                             icon="wrench"
                             :href="route('admin.manufacturers')"
                             :current="request()->routeIs('admin.manufacturers')"
