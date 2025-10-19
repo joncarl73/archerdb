@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\League;
 use App\Models\Order;
 use App\Models\Product;
+use App\Services\PricingService; // ⬅️ use your pricing service
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -64,18 +65,50 @@ class StartLeagueCheckoutController extends Controller
             ]);
         }
 
-        // Seller + flat fee (cents)
-        $seller = $product->seller;                  // null for internal/admin
-        $sellerStripe = $seller?->stripe_account_id;       // acct_... for corporate
+        // Seller + connected account (if any)
+        $seller = $product->seller;                 // null for internal/admin
+        $sellerStripe = $seller?->stripe_account_id;      // acct_... for corporate
 
-        // Flat fee selection: product → seller default → config
+        /**
+         * PLATFORM FEE (application_fee_amount) — now tier-aware
+         * Priority:
+         *   1) Company tier (league participant fee) via PricingService
+         *   2) Product -> seller default -> config fallback
+         */
+        $feeSource = 'fallback';
         $flatFeeCents = $product->platform_fee_cents
             ?? ($seller?->default_platform_fee_cents)
             ?? (int) config('payments.default_platform_fee_cents', 0);
 
         $flatFeeCents = max(0, (int) $flatFeeCents);
+
+        // Try company tier
+        $company = $league->company ?? null;
+        if ($company) {
+            $tierUnit = PricingService::participantFeeCents($company, 'league'); // cents (int)
+            $tierCur = strtolower((string) PricingService::currency($company));
+            $prodCur = strtolower((string) $product->currency);
+
+            if (is_int($tierUnit) && $tierUnit >= 0) {
+                if ($tierCur === $prodCur) {
+                    $flatFeeCents = $tierUnit;
+                    $feeSource = 'company_tier';
+                } else {
+                    Log::warning('Tier currency mismatch for league checkout; falling back to non-tier fee.', [
+                        'league_id' => $league->id,
+                        'company_id' => $company->id,
+                        'tier_currency' => $tierCur,
+                        'product_cur' => $prodCur,
+                        'tier_unit' => $tierUnit,
+                        'fallback_unit' => $flatFeeCents,
+                    ]);
+                }
+            }
+        }
+
+        // For DIRECT CHARGES, we can only collect application_fee_amount if charging on a connected account
         $applicationFee = $sellerStripe
-            ? min($flatFeeCents, (int) $product->price_cents)  // do not exceed price
+            ? min((int) $flatFeeCents, (int) $product->price_cents) // never exceed price
             : 0;
 
         // Create Order first
@@ -100,6 +133,9 @@ class StartLeagueCheckoutController extends Controller
             'metadata' => [
                 'league_id' => $league->id,
                 'league_uuid' => $league->public_uuid,
+                // Add transparency for fee calculation
+                'platform_fee_source' => $feeSource,
+                'platform_unit_fee_cents' => (int) $flatFeeCents,
             ],
         ]);
 
@@ -111,6 +147,9 @@ class StartLeagueCheckoutController extends Controller
             'product_id' => (string) $product->id,
             'buyer_id' => (string) Auth::id(),
             'league_uuid' => (string) $league->public_uuid,
+            // Helpful for debugging in Stripe
+            'platform_fee_source' => $feeSource,
+            'platform_unit_fee_cents' => (string) $flatFeeCents,
         ];
 
         $lineItem = [
@@ -125,9 +164,8 @@ class StartLeagueCheckoutController extends Controller
         $successUrl = route('checkout.return').'?session_id={CHECKOUT_SESSION_ID}';
         $cancelUrl = route('public.league.info', ['uuid' => $league->public_uuid]);
 
-        // DIRECT CHARGES:
-        // - Create the PaymentIntent on the connected account (so THEY pay Stripe processing fees)
-        // - Still collect your platform fee via application_fee_amount
+        // DIRECT CHARGES (connected account pays Stripe fees)
+        // application_fee_amount goes to your platform
         $payload = [
             'mode' => 'payment',
             'line_items' => [$lineItem],
@@ -136,15 +174,13 @@ class StartLeagueCheckoutController extends Controller
             'metadata' => $meta,
             'payment_intent_data' => [
                 'metadata' => $meta,
-                // application_fee_amount is allowed for direct charges; Stripe deducts this for the platform
                 'application_fee_amount' => $applicationFee,
             ],
             'success_url' => $successUrl,
             'cancel_url' => $cancelUrl,
         ];
 
-        // IMPORTANT:
-        // For DIRECT CHARGES, pass stripe_account in request options.
+        // IMPORTANT: For DIRECT CHARGES, pass stripe_account in request options.
         // DO NOT set transfer_data[destination] here (that would be destination charges).
         $createOpts = [];
         if ($sellerStripe) {
@@ -167,7 +203,13 @@ class StartLeagueCheckoutController extends Controller
         $order->stripe_checkout_session_id = $session->id;
         $order->save();
 
-        Log::info('Redirecting to Stripe Checkout', ['order_id' => $order->id, 'session' => $session->id]);
+        Log::info('Redirecting to Stripe Checkout', [
+            'order_id' => $order->id,
+            'session' => $session->id,
+            'fee_source' => $feeSource,
+            'fee_cents' => $flatFeeCents,
+            'app_fee_cents' => $applicationFee,
+        ]);
 
         return redirect($session->url);
     }
