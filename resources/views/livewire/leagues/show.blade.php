@@ -33,6 +33,8 @@ new class extends Component
     @php
         $mode = $league->scoring_mode->value ?? $league->scoring_mode;
         $isTabletMode = ($mode === 'tablet');
+        $canManageKiosks = Gate::check('manageKiosks', $league);
+        $canUpdateLeague = Gate::check('update', $league);
     @endphp
 
     <div class="mx-auto max-w-7xl">
@@ -63,7 +65,7 @@ new class extends Component
                     </flux:button>
 
                     {{-- Kiosk sessions --}}
-                    @if($isTabletMode)
+                    @if($isTabletMode && $canManageKiosks)
                         <flux:button as="a" href="{{ route('corporate.manager.kiosks.index', $league) }}" variant="primary" color="emerald" icon="computer-desktop">
                             Kiosk sessions
                         </flux:button>
@@ -73,9 +75,11 @@ new class extends Component
                     <flux:dropdown>
                         <flux:button icon:trailing="chevron-down">Actions</flux:button>
                         <flux:menu class="min-w-64">
+                            @if($canUpdateLeague)
                             <flux:menu.item href="{{ route('corporate.leagues.info.edit', $league) }}" icon="pencil-square">
                                 Create/Update league info
                             </flux:menu.item>
+                            @endif
                             <flux:menu.item href="{{ route('public.league.info', ['uuid' => $league->public_uuid]) }}" target="_blank" icon="arrow-top-right-on-square">
                                 View public page
                             </flux:menu.item>

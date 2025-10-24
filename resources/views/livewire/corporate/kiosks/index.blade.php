@@ -66,7 +66,7 @@ new class extends Component
 
     public function mount(League $league): void
     {
-        Gate::authorize('update', $league);
+        Gate::authorize('manageKiosks', $league);
 
         $this->league = $league->load(['weeks' => fn ($q) => $q->orderBy('week_number')]);
 
@@ -183,7 +183,7 @@ new class extends Component
 
     public function createSession(): void
     {
-        Gate::authorize('update', $this->league);
+        Gate::authorize('manageKiosks', $league);
 
         $this->validate([
             'week_number' => ['required', 'integer', 'between:1,'.$this->league->length_weeks],
@@ -230,7 +230,7 @@ new class extends Component
     /** Delete immediately (no modal), then re-expose those archers in the picker */
     public function deleteSession(int $id): void
     {
-        Gate::authorize('update', $this->league);
+        Gate::authorize('manageKiosks', $league);
 
         $s = KioskSession::where('league_id', $this->league->id)->findOrFail($id);
         $s->delete();
@@ -246,7 +246,7 @@ new class extends Component
     // remove a single archer from a kiosk session
     public function removeFromSession(int $sessionId, int $participantId): void
     {
-        Gate::authorize('update', $this->league);
+        Gate::authorize('manageKiosks', $league);
 
         $s = KioskSession::where('league_id', $this->league->id)->findOrFail($sessionId);
         $current = $this->normalizeParticipants($s->participants);
@@ -269,7 +269,7 @@ new class extends Component
     // add selected archers (from current week’s available list) to a kiosk session
     public function addToSession(int $sessionId): void
     {
-        Gate::authorize('update', $this->league);
+        Gate::authorize('manageKiosks', $league);
 
         $sel = $this->sessionAdd[$sessionId] ?? [];
         $sel = $this->normalizeParticipants($sel);

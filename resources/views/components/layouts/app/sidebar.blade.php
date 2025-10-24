@@ -90,7 +90,21 @@
                             wire:navigate>
                         {{ __('Leagues') }}
                         </flux:navlist.item>
+                        @php
+                            $u = auth()->user();
+                            $isOwner = $u && $u->company_id && $u->isCompanyOwner($u->company_id);
+                        @endphp
 
+                        @if ($isOwner)
+                            <flux:navlist.item
+                                icon="users"
+                                :href="route('corporate.companies.members', ['company' => auth()->user()->company_id])"
+                                :current="request()->routeIs('corporate.companies.members')"
+                                wire:navigate
+                            >
+                                Company Members
+                            </flux:navlist.item>
+                        @endif
 
                         @if (!$seller || !$seller->stripe_account_id)
                             <flux:navlist.item icon="credit-card" :href="route('payments.connect.start')">

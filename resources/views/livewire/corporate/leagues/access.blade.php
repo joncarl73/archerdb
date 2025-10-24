@@ -1,5 +1,6 @@
 <?php
 use App\Models\League;
+use App\Models\User;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Volt\Component;
 use Livewire\WithPagination;
@@ -19,14 +20,49 @@ new class extends Component
     // search & form
     public string $search = '';
 
-    public string $collabEmail = '';
+    // member dropdown instead of email
+    public $selectedMemberId = null;
 
     public string $collabRole = 'manager'; // manager | owner
+
+    // hydrated list of available (non-collaborator) company members
+    public array $companyMembers = [];
 
     public function mount(League $league): void
     {
         Gate::authorize('view', $league);
         $this->league = $league;
+        $this->refreshCompanyMembers();
+    }
+
+    protected function refreshCompanyMembers(): void
+    {
+        $companyId = $this->league->company_id;
+
+        $collaboratorIds = $this->league
+            ->collaborators()
+            ->pluck('users.id')
+            ->all();
+
+        $ownerId = optional($this->league->company)->owner_user_id;
+
+        $query = User::query()
+            ->where('company_id', $companyId)
+            ->when($ownerId, fn ($q) => $q->where('id', '<>', $ownerId))
+            ->when(! empty($collaboratorIds), fn ($q) => $q->whereNotIn('id', $collaboratorIds))
+            ->orderBy('name');
+
+        $this->companyMembers = $query
+            ->get(['id', 'name', 'email'])
+            ->map(fn ($u) => [
+                'id' => (int) $u->id,
+                'label' => trim(($u->name ?: $u->email).' — '.$u->email),
+            ])
+            ->all();
+
+        if ($this->selectedMemberId && ! collect($this->companyMembers)->pluck('id')->contains($this->selectedMemberId)) {
+            $this->selectedMemberId = null;
+        }
     }
 
     public function updatingSearch(): void
@@ -88,33 +124,39 @@ new class extends Component
         Gate::authorize('update', $this->league);
 
         $this->validate([
-            'collabEmail' => ['required', 'email', 'max:255', 'exists:users,email'],
+            'selectedMemberId' => ['required', 'integer', 'exists:users,id'],
             'collabRole' => ['required', 'in:owner,manager'],
-        ], [
-            'collabEmail.exists' => 'No account with that email exists. Ask them to sign up first.',
         ]);
 
-        $email = strtolower(trim($this->collabEmail));
-        $user = \App\Models\User::where('email', $email)->first();
+        /** @var User $user */
+        $user = User::find((int) $this->selectedMemberId);
 
-        if (! $user) {
-            $this->dispatch('toast', type: 'warning', message: 'No account with that email exists.');
-
-            return;
-        }
-
-        // Optional: ensure collaborator is in same company as the league
         if ($user->company_id !== $this->league->company_id) {
             $this->dispatch('toast', type: 'warning', message: 'User must belong to this company to be added as a collaborator.');
 
             return;
         }
 
+        $ownerId = optional($this->league->company)->owner_user_id;
+        if ($ownerId && (int) $user->id === (int) $ownerId) {
+            $this->dispatch('toast', type: 'info', message: 'Company owner already has full access.');
+
+            return;
+        }
+
+        if ($this->league->collaborators()->where('users.id', $user->id)->exists()) {
+            $this->dispatch('toast', type: 'info', message: 'That user is already a collaborator.');
+
+            return;
+        }
+
         $this->league->collaborators()->syncWithoutDetaching([$user->id => ['role' => $this->collabRole]]);
 
-        $this->collabEmail = '';
+        $this->selectedMemberId = null;
         $this->collabRole = 'manager';
         $this->resetPage($this->pageName);
+        $this->refreshCompanyMembers();
+
         $this->dispatch('toast', type: 'success', message: 'Collaborator added.');
     }
 
@@ -128,7 +170,6 @@ new class extends Component
             return;
         }
 
-        // last-owner guard
         if ($role !== 'owner') {
             $isOwner = $this->league->collaborators()->where('users.id', $userId)->wherePivot('role', 'owner')->exists();
             $ownerCount = $this->league->collaborators()->wherePivot('role', 'owner')->count();
@@ -157,10 +198,10 @@ new class extends Component
 
         $this->league->collaborators()->detach($userId);
         $this->dispatch('toast', type: 'success', message: 'Collaborator removed.');
+        $this->refreshCompanyMembers();
     }
 };
-?>
-
+?>  <!-- IMPORTANT: do not remove this closing tag -->
 <section class="w-full">
   <div class="mx-auto max-w-7xl">
     {{-- Header --}}
@@ -180,26 +221,50 @@ new class extends Component
       </div>
     </div>
 
-    {{-- Add collaborator --}}
+    {{-- Add collaborator (owner/admin only) --}}
     @can('update', $league)
-      <div class="mt-6 max-w-2xl">
-        <form wire:submit.prevent="addCollaborator" class="grid gap-3 md:grid-cols-3">
-          <flux:input type="email" wire:model.defer="collabEmail" placeholder="user@example.com" class="md:col-span-2" />
-          <div class="flex gap-2">
-            <flux:select wire:model="collabRole" class="w-full">
-              <option value="manager">Manager</option>
-              <option value="owner">Owner</option>
+      @if (!empty($this->companyMembers))
+        <div class="mt-6 max-w-2xl">
+          <form wire:submit.prevent="addCollaborator" class="grid gap-3 md:grid-cols-3">
+            {{-- Company members dropdown --}}
+            <flux:select wire:model.live="selectedMemberId" class="md:col-span-2">
+              <option value="">Select a company member…</option>
+              @foreach ($this->companyMembers as $m)
+                <option value="{{ $m['id'] }}">{{ $m['label'] }}</option>
+              @endforeach
             </flux:select>
-            <flux:button type="submit" variant="primary" color="indigo" icon="user-plus">Share</flux:button>
-          </div>
-        </form>
-        @error('collabEmail') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
-        @error('collabRole')  <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
 
-        <div class="mt-4 max-w-sm">
-          <flux:input icon="magnifying-glass" placeholder="Search collaborators…" wire:model.live.debounce.300ms="search" />
+            <div class="flex gap-2">
+              <flux:select wire:model="collabRole" class="w-full">
+                <option value="manager">Manager</option>
+                <option value="owner">Owner</option>
+              </flux:select>
+
+              {{-- Avoid attribute directives like @disabled(...) --}}
+              @if (!empty($this->selectedMemberId))
+                <flux:button type="submit" variant="primary" color="indigo" icon="user-plus">
+                  Share
+                </flux:button>
+              @else
+                <flux:button type="button" variant="primary" color="indigo" icon="user-plus" disabled>
+                  Share
+                </flux:button>
+              @endif
+            </div>
+          </form>
+
+          @error('selectedMemberId')
+            <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text>
+          @enderror
+          @error('collabRole')
+            <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text>
+          @enderror
+
+          <div class="mt-4 max-w-sm">
+            <flux:input icon="magnifying-glass" placeholder="Search collaborators…" wire:model.live.debounce.300ms="search" />
+          </div>
         </div>
-      </div>
+      @endif
     @endcan
 
     {{-- Table --}}
@@ -234,9 +299,13 @@ new class extends Component
               </td>
               <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
                 @can('update', $league)
-                  <flux:button variant="ghost" size="xs" icon="trash"
-                               class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
-                               wire:click="removeCollaborator({{ $u->id }})">
+                  <flux:button
+                    variant="ghost"
+                    size="xs"
+                    icon="trash"
+                    class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                    wire:click="removeCollaborator({{ $u->id }})"
+                  >
                     <span class="sr-only">Remove {{ $u->email }}</span>
                   </flux:button>
                 @else
@@ -247,7 +316,14 @@ new class extends Component
           @empty
             <tr>
               <td colspan="4" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
-                No collaborators yet. Add a user above.
+                No collaborators yet.
+                @can('update', $league)
+                  @if (empty($this->companyMembers))
+                    Company has no available members to add. Go to <em>Company Members</em> to invite them first.
+                  @else
+                    Add a user above.
+                  @endif
+                @endcan
               </td>
             </tr>
           @endforelse
