@@ -17,6 +17,7 @@ use App\Http\Controllers\StartParticipantImportCheckoutController;
 use App\Http\Controllers\StartProCheckoutController;
 use App\Http\Controllers\StripeReturnController;
 use App\Http\Controllers\StripeWebhookController;
+use App\Models\Event;
 use App\Models\League;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
@@ -126,6 +127,12 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
         )->name('leagues.participants.import.confirm')
             ->whereNumber('league')
             ->whereNumber('import');
+
+        // Event Routes
+        Volt::route('events', 'events.index')->name('events.index');
+        Volt::route('events/new', 'corporate.events.create')->name('events.create');
+        Volt::route('events/{event}', 'events.show')->name('events.show')->whereNumber('event');
+        Volt::route('events/{event}/basics', 'corporate.events.basics')->name('events.basics')->whereNumber('event');
 
         // ✅ Start Checkout (controller)
         Route::post(
@@ -238,6 +245,14 @@ Route::prefix('l/{uuid}')->group(function () {
 
     Route::get('/info', [PublicLeagueInfoController::class, 'show'])
         ->name('public.league.info');
+});
+
+Route::prefix('e/{uuid}')->group(function () {
+    Route::get('/', function (string $uuid) {
+        $event = \App\Models\Event::query()->where('public_uuid', $uuid)->firstOrFail();
+
+        return view('livewire/public/events/landing', ['event' => $event]);
+    })->name('public.event.landing');
 });
 
 /**
