@@ -91,4 +91,9 @@ class Event extends Model
     {
         return (int) $this->company_id === (int) $user->company_id;
     }
+
+    public function lineTimes()
+    {
+        return $this->hasMany(\App\Models\EventLineTime::class)->orderBy('line_date')->orderBy('start_time');
+    }
 }

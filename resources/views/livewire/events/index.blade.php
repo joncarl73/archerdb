@@ -1,6 +1,10 @@
 <?php
 use App\Enums\EventKind;
 use App\Models\Event;
+use App\Models\EventLineTime;
+use App\Models\Ruleset;
+use Carbon\Carbon;
+use Carbon\CarbonPeriod;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Volt\Component;
 
@@ -49,10 +53,46 @@ new class extends Component
 
     public bool $e_is_published = false;
 
+    // -----------------------
+    // Line Times drawer
+    // -----------------------
+    public bool $showLineTimes = false;
+
+    public ?int $lt_event_id = null;
+
+    public string $lt_event_title = '';
+
+    public ?string $lt_date = null;        // YYYY-MM-DD
+
+    public ?string $lt_start_time = null;  // HH:MM
+
+    public ?string $lt_end_time = null;    // HH:MM
+
+    public ?int $lt_capacity = 48;
+
+    public ?string $lt_notes = null;
+
+    public array $lt_dates_options = [];   // ['YYYY-MM-DD' => 'Fri Oct 31, 2025', ...]
+
+    // -----------------------
+    // Ruleset drawer (NEW)
+    // -----------------------
+    public bool $showRuleset = false;
+
+    public ?int $rs_event_id = null;
+
+    public string $rs_event_title = '';
+
+    public ?int $rs_selected_id = null;        // chosen ruleset id
+
+    public array $rs_options = [];             // [id => name]
+
+    public ?string $rs_selected_description = null; // preview of selected ruleset
+
     public function with(): array
     {
         $q = Event::query()
-            ->where('company_id', auth()->user()->company_id) // company-scoped
+            ->where('company_id', auth()->user()->company_id)
             ->when($this->search !== '', fn ($q) => $q->where(function ($w) {
                 $w->where('title', 'like', "%{$this->search}%")
                     ->orWhere('location', 'like', "%{$this->search}%");
@@ -154,7 +194,6 @@ new class extends Component
             'is_published' => $this->c_is_published,
         ]);
 
-        // auto-assign creator as Owner
         if (method_exists($event, 'collaborators')) {
             $event->collaborators()->syncWithoutDetaching([auth()->id() => ['role' => 'owner']]);
         }
@@ -268,11 +307,195 @@ new class extends Component
         $event->delete();
         session()->flash('ok', 'Event deleted.');
     }
+
+    // -----------------------
+    // Line Times
+    // -----------------------
+    public function openLineTimes(int $eventId): void
+    {
+        $this->resetErrorBag();
+
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($eventId);
+
+        Gate::authorize('update', $event);
+
+        $this->lt_event_id = $event->id;
+        $this->lt_event_title = $event->title ?? ('Event #'.$event->id);
+
+        $start = Carbon::parse($event->starts_on);
+        $end = Carbon::parse($event->ends_on ?? $event->starts_on);
+        $period = CarbonPeriod::create($start, $end);
+
+        $this->lt_dates_options = [];
+        foreach ($period as $d) {
+            $this->lt_dates_options[$d->format('Y-m-d')] = $d->format('D M j, Y');
+        }
+
+        $this->lt_date = array_key_first($this->lt_dates_options);
+        $this->lt_start_time = null;
+        $this->lt_end_time = null;
+        $this->lt_capacity = 48;
+        $this->lt_notes = null;
+
+        $this->showLineTimes = true;
+    }
+
+    public function saveLineTime(): void
+    {
+        $this->validate([
+            'lt_event_id' => ['required', 'integer', 'exists:events,id'],
+            'lt_date' => ['required', 'date'],
+            'lt_start_time' => ['required', 'date_format:H:i'],
+            'lt_end_time' => ['required', 'date_format:H:i', 'after:lt_start_time'],
+            'lt_capacity' => ['required', 'integer', 'min:1', 'max:10000'],
+            'lt_notes' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($this->lt_event_id);
+
+        Gate::authorize('update', $event);
+
+        $start = Carbon::parse($event->starts_on);
+        $end = Carbon::parse($event->ends_on ?? $event->starts_on);
+        $chosen = Carbon::parse($this->lt_date);
+        if ($chosen->lt($start) || $chosen->gt($end)) {
+            $this->addError('lt_date', 'Selected date is outside the event date range.');
+
+            return;
+        }
+
+        EventLineTime::create([
+            'event_id' => $event->id,
+            'line_date' => $this->lt_date,
+            'start_time' => $this->lt_start_time.':00',
+            'end_time' => $this->lt_end_time.':00',
+            'capacity' => $this->lt_capacity,
+            'notes' => $this->lt_notes,
+        ]);
+
+        $this->lt_start_time = null;
+        $this->lt_end_time = null;
+        $this->lt_notes = null;
+
+        session()->flash('ok', 'Line time added.');
+    }
+
+    public function deleteLineTime(int $lineTimeId): void
+    {
+        $lt = EventLineTime::query()->findOrFail($lineTimeId);
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($lt->event_id);
+
+        Gate::authorize('update', $event);
+
+        $lt->delete();
+        session()->flash('ok', 'Line time removed.');
+    }
+
+    // -----------------------
+    // Ruleset Drawer (NEW)
+    // -----------------------
+    public function openRuleset(int $eventId): void
+    {
+        $this->resetErrorBag();
+
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($eventId);
+
+        Gate::authorize('update', $event);
+
+        $this->rs_event_id = $event->id;
+        $this->rs_event_title = $event->title ?? ('Event #'.$event->id);
+
+        // Load available canned rulesets:
+        // - Global (company_id NULL)
+        // - Company-scoped
+        $rulesets = Ruleset::query()
+            ->where(function ($q) {
+                $q->whereNull('company_id')
+                    ->orWhere('company_id', auth()->user()->company_id);
+            })
+            ->orderBy('name')
+            ->get(['id', 'name', 'description']);
+
+        $this->rs_options = $rulesets->pluck('name', 'id')->toArray();
+
+        // Preselect current event ruleset if set
+        $this->rs_selected_id = $event->ruleset_id ?? null;
+
+        // Populate preview text
+        $this->rs_selected_description = optional(
+            $rulesets->firstWhere('id', $this->rs_selected_id)
+        )->description;
+
+        $this->showRuleset = true;
+    }
+
+    public function updatedRsSelectedId($value): void
+    {
+        // Live preview description on change
+        $desc = Ruleset::query()->whereKey($value)->value('description');
+        $this->rs_selected_description = $desc;
+    }
+
+    public function saveRuleset(): void
+    {
+        if (! $this->rs_event_id) {
+            return;
+        }
+
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($this->rs_event_id);
+
+        Gate::authorize('update', $event);
+
+        // Validate selected ID is one of the allowed options
+        if ($this->rs_selected_id && ! array_key_exists($this->rs_selected_id, $this->rs_options)) {
+            $this->addError('rs_selected_id', 'Invalid ruleset selection.');
+
+            return;
+        }
+
+        $event->ruleset_id = $this->rs_selected_id; // nullable FK
+        $event->save();
+
+        session()->flash('ok', 'Ruleset updated.');
+        $this->showRuleset = false;
+    }
+
+    public function clearRuleset(): void
+    {
+        if (! $this->rs_event_id) {
+            return;
+        }
+
+        $event = Event::query()
+            ->where('company_id', auth()->user()->company_id)
+            ->findOrFail($this->rs_event_id);
+
+        Gate::authorize('update', $event);
+
+        $event->ruleset_id = null;
+        $event->save();
+
+        $this->rs_selected_id = null;
+        $this->rs_selected_description = null;
+
+        session()->flash('ok', 'Ruleset cleared.');
+        $this->showRuleset = false;
+    }
 };
 ?>
 
 <div class="mx-auto max-w-7xl relative">
-  {{-- Header (match leagues page typography/spacing) --}}
+  {{-- Header --}}
   <div class="sm:flex sm:items-center">
     <div class="sm:flex-auto">
       <h1 class="text-base font-semibold text-gray-900 dark:text-white">Events</h1>
@@ -294,7 +517,7 @@ new class extends Component
     </div>
   @endif
 
-  {{-- Search (match leagues input sizing) --}}
+  {{-- Search --}}
   <div class="mt-4 max-w-sm">
     <flux:input icon="magnifying-glass" placeholder="Search by title or location…" wire:model.live.debounce.300ms="search" />
   </div>
@@ -337,7 +560,7 @@ new class extends Component
 
         <tbody class="divide-y divide-gray-100 dark:divide-white/10">
           @foreach ($events as $event)
-            <tr class="">
+            <tr>
               <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
                 <div class="flex items-center gap-2">
                   <span class="underline-offset-2">{{ $event->title }}</span>
@@ -375,13 +598,13 @@ new class extends Component
                     Edit
                   </flux:button>
 
-                  <a href="{{ route('corporate.events.access', $event) }}">
-                    <flux:button size="sm" appearance="secondary" icon="users">Collaborators</flux:button>
-                  </a>
+                  <flux:button size="sm" appearance="secondary" icon="clock" wire:click="openLineTimes({{ $event->id }})">
+                    Line Times
+                  </flux:button>
 
-                  <a href="{{ route('corporate.events.ruleset.show', $event) }}">
-                    <flux:button size="sm" appearance="secondary" icon="adjustments-horizontal">Ruleset</flux:button>
-                  </a>
+                  <flux:button size="sm" appearance="secondary" icon="adjustments-horizontal" wire:click="openRuleset({{ $event->id }})">
+                    Ruleset
+                  </flux:button>
 
                   <flux:button
                     size="sm"
@@ -400,13 +623,13 @@ new class extends Component
       </table>
     </div>
 
-    {{-- Pagination (keep same control used across app) --}}
+    {{-- Pagination --}}
     <div class="mt-4">
       {{ $events->links() }}
     </div>
   </div>
 
-  {{-- CREATE: Right-side drawer --}}
+  {{-- CREATE Drawer --}}
   @if($showCreate)
     <div class="fixed inset-0 z-40 bg-black/40" wire:click="closeCreate" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -478,7 +701,7 @@ new class extends Component
     </aside>
   @endif
 
-  {{-- EDIT: Right-side drawer --}}
+  {{-- EDIT Drawer --}}
   @if($showEdit)
     <div class="fixed inset-0 z-40 bg-black/40" wire:click="closeEdit" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -547,6 +770,160 @@ new class extends Component
         <flux:button appearance="secondary" wire:click="closeEdit">Cancel</flux:button>
         <flux:button icon="check" wire:click="saveEdit">Save changes</flux:button>
       </div>
+    </aside>
+  @endif
+
+  {{-- LINE TIMES Drawer --}}
+  @if($showLineTimes)
+    <div class="fixed inset-0 z-40 bg-black/40" x-on:click="$wire.showLineTimes=false" aria-hidden="true"></div>
+    <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-zinc-800">
+        <flux:text as="h2" class="text-lg font-semibold">Line Times — {{ $lt_event_title }}</flux:text>
+        <flux:button icon="x-mark" appearance="ghost" size="sm" wire:click="$set('showLineTimes', false)" />
+      </div>
+
+      <div class="flex-1 overflow-auto p-5 space-y-6">
+        {{-- Existing line times --}}
+        <div>
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-white mb-2">Existing</h3>
+          @php
+            $existing = $lt_event_id ? \App\Models\EventLineTime::query()
+              ->where('event_id', $lt_event_id)
+              ->orderBy('line_date')
+              ->orderBy('start_time')
+              ->get() : collect();
+          @endphp
+
+          @if($existing->isEmpty())
+            <div class="text-sm text-gray-500">No line times yet.</div>
+          @else
+            <ul class="space-y-2">
+              @foreach($existing as $lt)
+                @php
+                  $d      = optional($lt->line_date)->format('Y-m-d');
+                  $startT = $lt->start_time; // 'HH:MM:SS'
+                  $endT   = $lt->end_time;   // 'HH:MM:SS'
+                  $starts = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', "$d $startT")->format('m/d/Y g:ia');
+                  $ends   = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', "$d $endT")->format('g:ia');
+                @endphp
+                <li class="flex items-center justify-between rounded-xl border border-gray-200 dark:border-zinc-700 px-3 py-2">
+                  <div>
+                    <div class="font-medium text-gray-900 dark:text-white">{{ $starts }} – {{ $ends }}</div>
+                    <div class="text-xs text-gray-500">Capacity: {{ $lt->capacity }}</div>
+                    @if($lt->notes)
+                      <div class="text-xs text-gray-500">Notes: {{ $lt->notes }}</div>
+                    @endif
+                  </div>
+                  <flux:button
+                    size="xs"
+                    appearance="danger"
+                    icon="trash"
+                    wire:click="deleteLineTime({{ $lt->id }})"
+                    onclick="return confirm('Delete this line time?');"
+                  >Delete</flux:button>
+                </li>
+              @endforeach
+            </ul>
+          @endif
+        </div>
+
+        {{-- Add new line time --}}
+        <div class="rounded-2xl border border-gray-200 dark:border-zinc-700 p-4">
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Add Line Time</h3>
+
+          <div class="grid gap-3">
+            <div>
+              <flux:label>Date</flux:label>
+              <flux:select wire:model="lt_date">
+                @foreach($lt_dates_options as $val => $label)
+                  <option value="{{ $val }}">{{ $label }}</option>
+                @endforeach
+              </flux:select>
+              @error('lt_date') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <flux:label>Start time</flux:label>
+                <flux:input type="time" wire:model="lt_start_time" />
+                @error('lt_start_time') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+              </div>
+              <div>
+                <flux:label>End time</flux:label>
+                <flux:input type="time" wire:model="lt_end_time" />
+                @error('lt_end_time') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <flux:label>Capacity</flux:label>
+                <flux:input type="number" min="1" wire:model="lt_capacity" />
+                @error('lt_capacity') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+              </div>
+              <div>
+                <flux:label>Notes (optional)</flux:label>
+                <flux:input wire:model="lt_notes" placeholder="e.g., Compound/Recurve split" />
+                @error('lt_notes') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+              </div>
+            </div>
+
+            <div class="pt-2">
+              <flux:button icon="plus" wire:click="saveLineTime">Add line time</flux:button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <input type="hidden" wire:model="lt_event_id" />
+    </aside>
+  @endif
+
+  {{-- RULESET Drawer (NEW) --}}
+  @if($showRuleset)
+    <div class="fixed inset-0 z-40 bg-black/40" x-on:click="$wire.showRuleset=false" aria-hidden="true"></div>
+    <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-zinc-800">
+        <flux:text as="h2" class="text-lg font-semibold">Ruleset — {{ $rs_event_title }}</flux:text>
+        <flux:button icon="x-mark" appearance="ghost" size="sm" wire:click="$set('showRuleset', false)" />
+      </div>
+
+      <div class="flex-1 overflow-auto p-5 space-y-5">
+        <div>
+          <flux:label>Select ruleset</flux:label>
+          <flux:select wire:model="rs_selected_id">
+            <option value="">— None —</option>
+            @foreach($rs_options as $rid => $name)
+              <option value="{{ $rid }}">{{ $name }}</option>
+            @endforeach
+          </flux:select>
+          @error('rs_selected_id') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+        </div>
+
+        @if($rs_selected_description)
+          <div class="rounded-xl border border-gray-200 dark:border-zinc-700 p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500 mb-1">Description</div>
+            <div class="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-line">{{ $rs_selected_description }}</div>
+          </div>
+        @endif
+      </div>
+
+      <div class="border-t border-gray-200 dark:border-zinc-800 px-5 py-4 flex items-center gap-2">
+        <flux:button size="sm" appearance="secondary" icon="no-symbol" wire:click="clearRuleset">
+          Clear
+        </flux:button>
+
+        <div class="ml-auto flex items-center gap-2">
+          <flux:button size="sm" appearance="secondary" wire:click="$set('showRuleset', false)">
+            Cancel
+          </flux:button>
+          <flux:button size="sm" icon="check" wire:click="saveRuleset">
+            Save
+          </flux:button>
+        </div>
+      </div>
+
+      <input type="hidden" wire:model="rs_event_id" />
     </aside>
   @endif
 </div>
