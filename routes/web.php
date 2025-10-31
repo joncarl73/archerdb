@@ -128,12 +128,6 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
             ->whereNumber('league')
             ->whereNumber('import');
 
-        // Event Routes
-        Volt::route('events', 'events.index')->name('events.index');
-        Volt::route('events/new', 'corporate.events.create')->name('events.create');
-        Volt::route('events/{event}', 'events.show')->name('events.show')->whereNumber('event');
-        Volt::route('events/{event}/basics', 'corporate.events.basics')->name('events.basics')->whereNumber('event');
-
         // ✅ Start Checkout (controller)
         Route::post(
             'leagues/{league}/participants/import/{import}/start-checkout',
@@ -207,6 +201,45 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
         Route::get('leagues/{league}/checkin-qr.pdf', [LeagueQrController::class, 'downloadCheckinQr'])
             ->name('leagues.qr.pdf');
 
+    });
+
+// --- EVENTS ---
+
+// All “corporate” event pages are company-scoped and require a corporate user
+Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.completed'])
+    ->prefix('corporate')
+    ->name('corporate.')
+    ->group(function () {
+        // Index (company-scoped in the component query)
+        Volt::route('events', 'events.index')
+            ->name('events.index');
+
+        // New (drawer/page create form)
+        Volt::route('events/new', 'corporate.events.create')
+            ->name('events.create');
+
+        // Show/read-only style page for an event (if you have one)
+        Volt::route('events/{event}', 'events.show')
+            ->whereNumber('event')
+            ->name('events.show');
+
+        // (Optional) collaborators management (mirrors leagues’ page)
+        Volt::route('events/{event}/access', 'corporate.events.access')
+            ->whereNumber('event')
+            ->name('events.access');
+
+        // (Optional) ruleset pages you add
+        Volt::route('events/{event}/ruleset', 'corporate.events.ruleset.show')
+            ->whereNumber('event')
+            ->name('events.ruleset.show');
+
+        Volt::route('events/{event}/ruleset/overrides', 'corporate.events.ruleset.overrides')
+            ->whereNumber('event')
+            ->name('events.ruleset.overrides');
+
+        Volt::route('events/{event}/ruleset/create', 'corporate.events.ruleset.create')
+            ->whereNumber('event')
+            ->name('events.ruleset.create');
     });
 
 // --- PUBLIC (no auth) ---

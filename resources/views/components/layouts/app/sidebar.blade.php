@@ -90,6 +90,12 @@
                             wire:navigate>
                         {{ __('Leagues') }}
                         </flux:navlist.item>
+                        <flux:navlist.item icon="flag"
+                            :href="route('corporate.events.index')"
+                            :current="request()->routeIs('corporate.events.index')"
+                            wire:navigate>
+                        {{ __('Events') }}
+                        </flux:navlist.item>
                         @php
                             $u = auth()->user();
                             $isOwner = $u && $u->company_id && $u->isCompanyOwner($u->company_id);

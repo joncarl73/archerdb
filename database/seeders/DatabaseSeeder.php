@@ -14,5 +14,6 @@ class DatabaseSeeder extends Seeder
     {
         $this->call(ManufacturerSeeder::class);
         $this->call(PlatformSellerSeeder::class);
+        $this->call(RulesetSeeder::class);
     }
 }

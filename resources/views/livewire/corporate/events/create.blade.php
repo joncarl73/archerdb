@@ -1,6 +1,8 @@
 <?php
 use App\Enums\EventKind;
 use App\Models\Event;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Volt\Component;
 
 new class extends Component
@@ -17,36 +19,49 @@ new class extends Component
 
     public bool $is_published = false;
 
-    public function save()
+    public function mount(): void
     {
-        // 🔒 All keys QUOTED
+        Gate::authorize('create', Event::class);
+    }
+
+    public function save(): RedirectResponse
+    {
+        // Validate inputs
         $this->validate([
             'title' => ['required', 'string', 'max:255'],
-            'kind' => ['required'],      // <-- quoted
+            'kind' => ['required'],
             'starts_on' => ['required', 'date'],
             'ends_on' => ['nullable', 'date'],
         ]);
 
+        // Normalize dates based on kind
         if ($this->kind === EventKind::SingleDay->value) {
             $this->ends_on = $this->starts_on;
         } elseif (! $this->ends_on) {
             $this->addError('ends_on', 'End date is required for multi-day events.');
 
-            return;
+            // Return to the same page with validation error; no redirect
+            return back();
         }
 
-        // 🔒 All keys QUOTED
         $event = Event::create([
             'company_id' => auth()->user()->company_id,
-            'title' => $this->title,
+            'title' => trim($this->title),
             'location' => $this->location,
-            'kind' => $this->kind,            // <-- quoted key, value is $this->kind
+            'kind' => $this->kind,
             'starts_on' => $this->starts_on,
             'ends_on' => $this->ends_on,
             'is_published' => $this->is_published,
         ]);
 
-        return redirect()->route('corporate.events.basics', $event);
+        $event->collaborators()->syncWithoutDetaching([
+            auth()->id() => ['role' => 'owner'],
+        ]);
+
+        // ✅ Return a real RedirectResponse (not Livewire Redirector)
+        // Change the route name below if your “show” route is different.
+        return to_route('corporate.events.show', ['event' => $event->id])
+            ->with('ok', 'Event created.');
     }
 }; ?>
 
@@ -83,7 +98,7 @@ new class extends Component
 
       <div>
         <flux:label>Ends on</flux:label>
-        {{-- ✅ Use Blade’s @disabled so PHP doesn’t evaluate "$wire.kind" --}}
+        {{-- Disable when single-day --}}
         <flux:input type="date" wire:model="ends_on" @disabled($kind === 'single_day') />
         @error('ends_on') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
       </div>

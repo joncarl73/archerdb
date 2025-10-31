@@ -1,0 +1,40 @@
+{
+  "org": "WA | USAA | AGB | NFAA | ASA | IBO | IFAA | CUSTOM",
+  "disciplines": ["target","indoor","outdoor","field","3d","clout","flight"],
+  "bows_allowed": ["recurve","compound","barebow","longbow","traditional","crossbow"],
+  "target_faces": [
+    {"id":"122cm","kind":"wa_target","diameter_cm":122,"zones":"10","notes":""},
+    {"id":"40cm_vert3","kind":"wa_vertical_triple","diameter_cm":40,"zones":"10"}
+  ],
+  "scoring": {
+    "mode": "wa_10 | agb_5 | nfaa_5 | asa_12_10_8_5 | ibo_11_10_8_5 | ifaa_5_4_3 | animal_progressive",
+    "x_rule": "counts_10 | counts_11 | tiebreak_only",
+    "line_cutter_rule": "higher_value",
+    "inner_ten_compound": true
+  },
+  "rounds": [
+    {
+      "id":"wa_indoor_18",
+      "name":"WA Indoor 18m",
+      "arrows_per_end":3,
+      "ends":20,
+      "distances_m":[18],
+      "face_id":"40cm_vert3",
+      "timing_sec_per_end":120,
+      "shoot_off": {"procedure":"single_arrow closest-to-center"},
+      "age_exceptions":[]
+    }
+  ],
+  "tie_break": {"order":["score","x_count","10_count","closest_to_center"]},
+  "equipment_restrictions": {
+    "recurve":{"sight":"allowed","release":"fingers_only"},
+    "compound":{"peep":"allowed","release":"mechanical_allowed"},
+    "barebow":{"sight":"none"},
+    "longbow":{}
+  },
+  "field_3d_rules": {
+    "asa_call_upper_12": true,
+    "ibo_11_center": true,
+    "ifaa_animal_progression": {"kill":[20,16,12],"wound":[18,14,10]}
+  }
+}

@@ -43,4 +43,52 @@ class Event extends Model
     {
         return $this->kind === EventKind::SingleDay;
     }
+
+    public function ruleset()
+    {
+        return $this->belongsTo(Ruleset::class);
+    }
+
+    public function rulesetOverrides()
+    {
+        return $this->hasOne(EventRulesetOverride::class);
+    }
+
+    public function effectiveRules(): array
+    {
+        $base = $this->ruleset?->schema ?? [];
+        $ovr = $this->rulesetOverrides?->overrides ?? [];
+
+        return \App\Support\RulesetResolver::deepMerge($base, $ovr);
+    }
+
+    public function collaborators()
+    {
+        // Matches league_users style but for events
+        return $this->belongsToMany(User::class, 'event_users')
+            ->withPivot('role')
+            ->withTimestamps();
+    }
+
+    public function owners()
+    {
+        return $this->collaborators()->wherePivot('role', 'owner');
+    }
+
+    public function managers()
+    {
+        return $this->collaborators()->wherePivot('role', 'manager');
+    }
+
+    public function userRoleFor(User $user): ?string
+    {
+        $p = $this->collaborators()->where('user_id', $user->id)->first()?->pivot;
+
+        return $p?->role;
+    }
+
+    public function belongsToSameCompany(User $user): bool
+    {
+        return (int) $this->company_id === (int) $user->company_id;
+    }
 }
