@@ -96,6 +96,12 @@
                             wire:navigate>
                         {{ __('Events') }}
                         </flux:navlist.item>
+                        <flux:navlist.item icon="adjustments-horizontal"
+                            :href="route('corporate.rulesets.index')"
+                            :current="request()->routeIs('corporate.rulesets.index')"
+                            wire:navigate>
+                        {{ __('Rulesets') }}
+                        </flux:navlist.item>
                         @php
                             $u = auth()->user();
                             $isOwner = $u && $u->company_id && $u->isCompanyOwner($u->company_id);

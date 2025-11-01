@@ -8,12 +8,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Ruleset extends Model
 {
     protected $fillable = [
-        'company_id', 'org', 'name', 'slug', 'description', 'is_system', 'schema',
+        'company_id', 'org', 'name', 'slug', 'description', 'schema', 'scoring_values', 'x_value', 'distance_m',
     ];
 
     protected $casts = [
-        'is_system' => 'boolean',
         'schema' => 'array',   // JSON <-> array
+        'scoring_values' => 'array',
+        'x_value' => 'integer',
+        'distance_m',
     ];
 
     public function company(): BelongsTo
@@ -41,5 +43,30 @@ class Ruleset extends Model
         return $q->where(function ($w) use ($companyId) {
             $w->whereNull('company_id')->orWhere('company_id', $companyId);
         });
+    }
+
+    public function disciplines()
+    {
+        return $this->belongsToMany(\App\Models\Discipline::class, 'ruleset_discipline');
+    }
+
+    public function bowTypes()
+    {
+        return $this->belongsToMany(\App\Models\BowType::class, 'ruleset_bow_type');
+    }
+
+    public function targetFaces()
+    {
+        return $this->belongsToMany(\App\Models\TargetFace::class, 'ruleset_target_face');
+    }
+
+    public function divisions()
+    {
+        return $this->belongsToMany(\App\Models\Division::class, 'ruleset_division');
+    }
+
+    public function classes()
+    {
+        return $this->belongsToMany(\App\Models\RulesetClass::class, 'ruleset_class', 'ruleset_id', 'class_id');
     }
 }

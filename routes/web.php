@@ -228,18 +228,7 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
             ->whereNumber('event')
             ->name('events.access');
 
-        // (Optional) ruleset pages you add
-        Volt::route('events/{event}/ruleset', 'corporate.events.ruleset.show')
-            ->whereNumber('event')
-            ->name('events.ruleset.show');
-
-        Volt::route('events/{event}/ruleset/overrides', 'corporate.events.ruleset.overrides')
-            ->whereNumber('event')
-            ->name('events.ruleset.overrides');
-
-        Volt::route('events/{event}/ruleset/create', 'corporate.events.ruleset.create')
-            ->whereNumber('event')
-            ->name('events.ruleset.create');
+        Volt::route('rulesets', 'rulesets.index')->name('rulesets.index');
     });
 
 // --- PUBLIC (no auth) ---

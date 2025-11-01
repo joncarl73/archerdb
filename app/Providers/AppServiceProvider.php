@@ -9,12 +9,14 @@ use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueWeekEnd;
 use App\Models\LeagueWeekScore;
+use App\Models\Ruleset;
 use App\Observers\LeagueCheckinObserver;
 use App\Observers\LeagueWeekEndObserver;
 use App\Observers\LeagueWeekScoreObserver;
 use App\Policies\CompanyPolicy;
 use App\Policies\EventPolicy;
 use App\Policies\LeaguePolicy;
+use App\Policies\RulesetPolicy;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Gate;
@@ -60,6 +62,7 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(League::class, LeaguePolicy::class);
         Gate::policy(Company::class, CompanyPolicy::class);
         Gate::policy(Event::class, EventPolicy::class);
+        Gate::policy(Ruleset::class, RulesetPolicy::class);
 
         // Observers
         LeagueWeekEnd::observe(LeagueWeekEndObserver::class);
