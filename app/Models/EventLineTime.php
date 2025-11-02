@@ -43,4 +43,9 @@ class EventLineTime extends Model
     {
         return "{$this->starts_at_display} – {$this->ends_at_display}";
     }
+
+    public function checkins()
+    {
+        return $this->hasMany(\App\Models\EventCheckin::class, 'event_line_time_id');
+    }
 }

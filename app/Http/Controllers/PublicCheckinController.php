@@ -1,150 +1,98 @@
 <?php
 
-// app/Http/Controllers/PublicCheckinController.php
-
 namespace App\Http\Controllers;
 
+use App\Models\Event;
+use App\Models\EventCheckin;
 use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueParticipant;
-use App\Models\LeagueWeek;
+// If/when you add it:
+// use App\Models\EventParticipant;
+
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Auth;
 
 class PublicCheckinController extends Controller
 {
-    protected function leagueOr404(string $uuid): League
-    {
-        return League::query()
-            ->where('public_uuid', $uuid)
-            ->firstOrFail();
-    }
+    // =========================================================================
+    // LEAGUE FLOW
+    // Routes (l/{uuid}):
+    //   GET  /checkin                  -> participants
+    //   POST /checkin                  -> participantsSubmit
+    //   GET  /checkin/{participant}    -> details
+    //   POST /checkin/{participant}    -> detailsSubmit
+    //   GET  /checkin/ok/{checkin}     -> ok
+    // =========================================================================
 
     public function participants(string $uuid)
     {
-        $league = $this->leagueOr404($uuid);
+        $league = League::where('public_uuid', $uuid)->firstOrFail();
+        $participants = $this->fetchLeagueRoster($league);
 
-        $participants = LeagueParticipant::query()
-            ->where('league_id', $league->id)
-            ->orderBy('last_name')->orderBy('first_name')
-            ->get(['id', 'first_name', 'last_name', 'email']);
-
-        return response()->view('public.checkin.participants', compact('league', 'participants'));
+        return view('public.checkin.participants', [
+            'context' => 'league',
+            'league' => $league,
+            'participants' => $participants, // [{id,name,email}]
+        ]);
     }
 
     public function participantsSubmit(Request $request, string $uuid)
     {
-        $league = $this->leagueOr404($uuid);
+        $league = League::where('public_uuid', $uuid)->firstOrFail();
 
-        $data = $request->validate([
-            'participant_id' => ['required', 'integer',
-                Rule::exists('league_participants', 'id')->where('league_id', $league->id),
-            ],
-        ]);
+        $participantId = (int) $request->input('participant_id');
+        if (! $participantId) {
+            return back()->withErrors(['participant_id' => 'Please select a participant.']);
+        }
 
         return redirect()->route('public.checkin.details', [
             'uuid' => $uuid,
-            'participant' => $data['participant_id'],
+            'participant' => $participantId,
         ]);
     }
 
     public function details(string $uuid, int $participant)
     {
-        $league = $this->leagueOr404($uuid);
+        $league = League::where('public_uuid', $uuid)->firstOrFail();
 
-        $p = LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
-
-        $weeks = LeagueWeek::where('league_id', $league->id)
-            ->orderBy('week_number')
-            ->get(['id', 'week_number', 'date']);
-
-        // Short letters for lane breakdown
-        $letters = $league->lane_breakdown->letters();                  // [] or ['A','B'] or ['A','B','C','D']
-        $positionsPerLane = $league->lane_breakdown->positionsPerLane(); // 1,2,4
-
-        $laneOptions = [];
-        for ($i = 1; $i <= (int) $league->lanes_count; $i++) {
-            if ($positionsPerLane === 1) {
-                $code = (string) $i;
-                $laneOptions[] = ['value' => $code, 'label' => "Lane {$code}"];
-            } else {
-                foreach ($letters as $L) {
-                    $code = $i.$L; // e.g. 5A
-                    $laneOptions[] = ['value' => $code, 'label' => "Lane {$code}"];
-                }
-            }
-        }
-
-        return response()->view('public.checkin.details', compact('league', 'p', 'weeks', 'laneOptions'));
+        // Blade renders week + lane/slot (personal-device).
+        return view('public.checkin.details', [
+            'league' => $league,
+            'participantId' => $participant,
+        ]);
     }
 
     public function detailsSubmit(Request $request, string $uuid, int $participant)
     {
-        $league = $this->leagueOr404($uuid);
-        $p = LeagueParticipant::where('league_id', $league->id)->findOrFail($participant);
+        $league = League::where('public_uuid', $uuid)->firstOrFail();
 
-        // Validate week_number is a valid league week and lane is "5" or "5A" style
-        $request->validate([
-            'week_number' => [
-                'required', 'integer', 'between:1,'.$league->length_weeks,
-                Rule::exists('league_weeks', 'week_number')->where('league_id', $league->id),
-            ],
-            'lane' => ['required', 'string', 'max:10'],
+        // Align to schema (lane_number / lane_slot)
+        $data = $request->validate([
+            'week_number' => ['required', 'integer', 'min:1'],
+            'lane_number' => ['required', 'integer', 'min:1'],
+            'lane_slot' => ['required', 'string', 'max:1'], // A/B/C/D
         ]);
 
-        // Parse lane into number + slot
-        $laneCode = trim($request->input('lane'));     // "5" or "5A"
-        $laneNumber = null;
-        $laneSlot = 'single';                          // default for single-lane
+        // Double-booking guard (same week + lane + slot)
+        $taken = LeagueCheckin::where([
+            'league_id' => $league->id,
+            'week_number' => (int) $data['week_number'],
+            'lane_number' => (int) $data['lane_number'],
+            'lane_slot' => strtoupper($data['lane_slot']),
+        ])->exists();
 
-        if (ctype_digit($laneCode)) {
-            $laneNumber = (int) $laneCode;
-            $laneSlot = 'single';
-        } elseif (preg_match('/^(\d+)([A-D])$/i', $laneCode, $m)) {
-            $laneNumber = (int) $m[1];
-            $laneSlot = strtoupper($m[2]);            // "A" | "B" | "C" | "D"
-        } else {
-            return back()->withErrors(['lane' => 'Invalid lane selection.'])->withInput();
+        if ($taken) {
+            return back()->withErrors(['lane_slot' => 'That lane/slot is taken for the selected week.']);
         }
 
-        // Sanity-check against league config
-        $maxLanes = (int) $league->lanes_count;
-        if ($laneNumber < 1 || $laneNumber > $maxLanes) {
-            return back()->withErrors(['lane' => 'Lane number out of range.'])->withInput();
-        }
-        $allowedLetters = $league->lane_breakdown->letters(); // [] | ['A','B'] | ['A','B','C','D']
-        if ($laneSlot !== 'single' && ! in_array($laneSlot, $allowedLetters, true)) {
-            return back()->withErrors(['lane' => 'Lane slot not allowed for this league.'])->withInput();
-        }
-
-        $weekNumber = (int) $request->input('week_number');
-        $laneLabel = $laneNumber.($laneSlot === 'single' ? '' : $laneSlot);
-
-        // Already checked in for this week?
-        $existing = LeagueCheckin::query()
-            ->where('league_id', $league->id)
-            ->where('participant_id', $p->id)
-            ->where('week_number', $weekNumber)
-            ->first();
-
-        if ($existing) {
-            // Do not mutate the existing record — just send them to OK with that checkin id
-            return redirect()->route('public.checkin.ok', [
-                'uuid' => $uuid,
-                'checkin' => $existing->id,
-            ]);
-        }
-
-        // New check-in
         $checkin = LeagueCheckin::create([
             'league_id' => $league->id,
-            'participant_id' => $p->id,
-            'participant_name' => trim($p->first_name.' '.$p->last_name),
-            'participant_email' => $p->email ?: null,
-            'week_number' => $weekNumber,
-            'lane_number' => $laneNumber,
-            'lane_slot' => $laneSlot,
-            'checked_in_at' => now(),
+            'week_number' => (int) $data['week_number'],
+            'participant_id' => (int) $participant,
+            'user_id' => Auth::id(),
+            'lane_number' => (int) $data['lane_number'],
+            'lane_slot' => strtoupper($data['lane_slot']),
         ]);
 
         return redirect()->route('public.checkin.ok', [
@@ -153,59 +101,204 @@ class PublicCheckinController extends Controller
         ]);
     }
 
-    /**
-     * OK page — fully deterministic from URL/DB (no flash).
-     *
-     * Route-model binds {checkin} to LeagueCheckin; we also validate it belongs to {uuid}.
-     */
-    public function ok(string $uuid, LeagueCheckin $checkin)
+    public function ok(string $uuid, int $checkin)
     {
-        $league = $this->leagueOr404($uuid);
+        $league = League::where('public_uuid', $uuid)->firstOrFail();
+        $checkinM = LeagueCheckin::where('id', $checkin)
+            ->where('league_id', $league->id)
+            ->firstOrFail();
 
-        // Guard: ensure the checkin belongs to this league
-        if ((int) $checkin->league_id !== (int) $league->id) {
-            abort(404);
-        }
-
-        // Derive display fields
-        $name = $checkin->participant_name ?: trim(($checkin->first_name ?? '').' '.($checkin->last_name ?? ''));
-        $week = (int) $checkin->week_number;
-        $lane = $checkin->lane_number.($checkin->lane_slot === 'single' ? '' : $checkin->lane_slot);
-        $checkinId = (int) $checkin->id;
-
-        // "Repeat" if someone already had a checkin for this week prior to this record's creation.
-        // If you store a dedicated flag, swap this logic to use it.
-        $repeat = false;
-        if ($checkin->wasRecentlyCreated === false) {
-            $repeat = true;
-        }
-
-        // Optional: pre-fetch the week row so Blade can render the scheduled date without another query
-        $weekRow = LeagueWeek::where('league_id', $league->id)
-            ->where('week_number', $week)
-            ->first();
-
-        return response()->view('public.checkin.ok', [
+        return view('public.checkin.ok', [
             'league' => $league,
-            'name' => $name,
-            'repeat' => $repeat,
-            'week' => $week,
-            'lane' => $lane,
-            'checkinId' => $checkinId,
-            'weekRow' => $weekRow,
+            'checkin' => $checkinM,
         ]);
     }
 
-    public function week(League $league, string $participant)
-    {
-        $weeks = $league->weeks()->orderBy('week_number')->get();
-        $laneOptions = $league->laneOptions();
+    // =========================================================================
+    // EVENT FLOW
+    // Routes (e/{uuid}):
+    //   GET  /checkin                  -> participantsForEvent
+    //   POST /checkin                  -> participantsForEventSubmit
+    //   GET  /checkin/{participant}    -> detailsForEvent
+    //   POST /checkin/{participant}    -> detailsForEventSubmit
+    //   (no OK page in your routes; we go straight to scoring start)
+    // =========================================================================
 
-        return view('public.leagues.checkin.week', [
-            'league' => $league,
-            'participant' => $participant,
-            'weeks' => $weeks,
-            'laneOptions' => $laneOptions,
+    public function participantsForEvent(string $uuid)
+    {
+        $event = Event::where('public_uuid', $uuid)->firstOrFail();
+        $participants = $this->fetchEventRoster($event); // empty => free-form
+
+        return view('public.checkin.participants', [
+            'context' => 'event',
+            'event' => $event,
+            'participants' => $participants,
         ]);
+    }
+
+    public function participantsForEventSubmit(Request $request, string $uuid)
+    {
+        $event = Event::where('public_uuid', $uuid)->firstOrFail();
+
+        // Either pick from roster or submit free-form
+        $participantId = $request->filled('participant_id') ? (int) $request->input('participant_id') : null;
+
+        if (! $participantId) {
+            $data = $request->validate([
+                'first_name' => ['required', 'string', 'max:100'],
+                'last_name' => ['required', 'string', 'max:100'],
+                'email' => ['nullable', 'email', 'max:255'],
+            ]);
+            session([
+                'event_checkin_freeform' => [
+                    'first_name' => $data['first_name'],
+                    'last_name' => $data['last_name'],
+                    'email' => $data['email'] ?? null,
+                ],
+            ]);
+            $participantId = 0; // synthetic free-form flag
+        }
+
+        return redirect()->route('public.event.checkin.details', [
+            'uuid' => $uuid,
+            'participant' => $participantId,
+        ]);
+    }
+
+    public function detailsForEvent(string $uuid, int $participant)
+    {
+        $event = Event::where('public_uuid', $uuid)->firstOrFail();
+
+        $lineTimes = $event->lineTimes()
+            ->orderBy('line_date')
+            ->orderBy('start_time')
+            ->get(['id', 'line_date', 'start_time', 'end_time', 'capacity', 'notes']);
+
+        $slots = $this->deriveSlotsFromEvent($event); // ['A'] | ['A','B'] | ['A','B','C','D']
+
+        $freeform = $participant === 0 ? session('event_checkin_freeform', null) : null;
+
+        return view('public.checkin.details-event', [
+            'event' => $event,
+            'participantId' => $participant,
+            'lineTimes' => $lineTimes,
+            'slots' => $slots,
+            'freeform' => $freeform,
+        ]);
+    }
+
+    public function detailsForEventSubmit(Request $request, string $uuid, int $participant)
+    {
+        $event = Event::where('public_uuid', $uuid)->firstOrFail();
+
+        $data = $request->validate([
+            'event_line_time_id' => ['required', 'integer', 'exists:event_line_times,id'],
+            'lane_number' => ['required', 'integer', 'min:1'],
+            'lane_slot' => ['required', 'string', 'max:1'], // A/B/C/D
+        ]);
+
+        // Prevent double-booking
+        $taken = EventCheckin::where([
+            'event_id' => $event->id,
+            'event_line_time_id' => (int) $data['event_line_time_id'],
+            'lane_number' => (int) $data['lane_number'],
+            'lane_slot' => strtoupper($data['lane_slot']),
+        ])->exists();
+
+        if ($taken) {
+            return back()->withErrors(['lane_slot' => 'That lane/slot is already taken for this line time.']);
+        }
+
+        $payload = [
+            'event_id' => $event->id,
+            'event_line_time_id' => (int) $data['event_line_time_id'],
+            'participant_id' => $participant ?: null, // null when free-form
+            'user_id' => Auth::id(),
+            'lane_number' => (int) $data['lane_number'],
+            'lane_slot' => strtoupper($data['lane_slot']),
+        ];
+
+        // If free-form, persist basic identity onto the row (if those columns exist)
+        if ($participant === 0 && is_array(session('event_checkin_freeform'))) {
+            $ff = session('event_checkin_freeform');
+            foreach (['first_name', 'last_name', 'email'] as $k) {
+                if (array_key_exists($k, $ff)) {
+                    $payload[$k] = $ff[$k];
+                }
+            }
+        }
+
+        $checkin = EventCheckin::create($payload);
+
+        if ($participant === 0) {
+            session()->forget('event_checkin_freeform');
+        }
+
+        // No OK route for events in your routes: go straight to scoring-start
+        return redirect()->route('public.event.scoring.start', ['checkin' => $checkin->id]);
+    }
+
+    // =========================================================================
+    // HELPERS
+    // =========================================================================
+
+    /**
+     * League public check-in: fetch roster from LeagueParticipant.
+     * Returns [{id,name,email}]
+     */
+    protected function fetchLeagueRoster(League $league)
+    {
+        return $league->participants()
+            ->select(['id', 'first_name', 'last_name', 'email'])
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get()
+            ->map(fn ($p) => [
+                'id' => (int) $p->id,
+                'name' => trim(($p->first_name ?? '').' '.($p->last_name ?? '')) ?: 'Unknown',
+                'email' => (string) ($p->email ?? ''),
+            ]);
+    }
+
+    /**
+     * Event public check-in roster.
+     * If EventParticipant doesn’t exist yet, return empty so the blade shows free-form inputs.
+     */
+    protected function fetchEventRoster(Event $event)
+    {
+        // Uncomment once EventParticipant exists:
+        // if (class_exists(\App\Models\EventParticipant::class)) {
+        //     return \App\Models\EventParticipant::where('event_id', $event->id)
+        //         ->select(['id','first_name','last_name','email'])
+        //         ->orderBy('last_name')->orderBy('first_name')
+        //         ->get()
+        //         ->map(fn($p) => [
+        //             'id'    => (int) $p->id,
+        //             'name'  => trim(($p->first_name ?? '').' '.($p->last_name ?? '')) ?: 'Unknown',
+        //             'email' => (string) ($p->email ?? ''),
+        //         ]);
+        // }
+
+        return collect(); // free-form fallback
+    }
+
+    /**
+     * Determine lane slots allowed by the event’s rules.
+     */
+    protected function deriveSlotsFromEvent(Event $event): array
+    {
+        if (method_exists($event, 'effectiveRules')) {
+            $schema = $event->effectiveRules();
+            $mode = data_get($schema, 'lane_breakdown', 'single');
+        } else {
+            $schema = $event->ruleset?->schema ?? [];
+            $mode = data_get($schema, 'lane_breakdown', 'single');
+        }
+
+        return match ($mode) {
+            'ab' => ['A', 'B'],
+            'abcd' => ['A', 'B', 'C', 'D'],
+            default => ['A'],
+        };
     }
 }

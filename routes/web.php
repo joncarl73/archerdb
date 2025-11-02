@@ -36,6 +36,7 @@ Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'profile.completed'])
     ->name('dashboard');
 
+// (Legacy) Public league info landing by UUID
 Route::get('/events/{uuid}', [PublicLeagueController::class, 'infoLanding'])->name('public.league.info.landing');
 
 Route::middleware(['auth', 'profile.completed'])->group(function () {
@@ -104,21 +105,26 @@ Route::middleware(['auth'])->group(function () {
     })->name('impersonate.stop');
 });
 
-// League Routes
+// =====================
+// LEAGUE ROUTES (corp)
+// =====================
 Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.completed'])
     ->prefix('corporate')
     ->name('corporate.')
     ->group(function () {
         // Leagues (Volt pages)
         Volt::route('leagues', 'leagues.index')->name('leagues.index');
+
         Volt::route('leagues/{league}', 'leagues.show')
             ->name('leagues.show')
             ->whereNumber('league'); // uses route model binding for League
+
         Volt::route('leagues/{league}/info', 'corporate.leagues.info-editor')
             ->name('leagues.info.edit')
             ->whereNumber('league');
+
         Volt::route('leagues/{league}/participants', 'leagues.participants')
-            ->Name('leagues.participants.index')
+            ->name('leagues.participants.index')
             ->whereNumber('league');
 
         Volt::route(
@@ -189,49 +195,64 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
             [\App\Http\Controllers\LeagueScoringSheetController::class, '__invoke'])
             ->name('leagues.scoring_sheet');
 
-        // Kiosk Manager (private) — already in your file
+        // Kiosk Manager (private)
         Volt::route('leagues/{league}/kiosks', 'corporate.kiosks.index')
             ->name('manager.kiosks.index');
 
-        // Live Score View
+        // Live Score View (per week)
         Route::get('leagues/{league}/weeks/{week}/live', \App\Livewire\Corporate\Leagues\LiveScoring::class)
             ->name('leagues.weeks.live');
 
         // QR League Code
         Route::get('leagues/{league}/checkin-qr.pdf', [LeagueQrController::class, 'downloadCheckinQr'])
             ->name('leagues.qr.pdf');
-
     });
 
-// --- EVENTS ---
-
-// All “corporate” event pages are company-scoped and require a corporate user
+// ====================
+// EVENT ROUTES (corp)
+// ====================
 Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.completed'])
     ->prefix('corporate')
     ->name('corporate.')
     ->group(function () {
-        // Index (company-scoped in the component query)
-        Volt::route('events', 'events.index')
-            ->name('events.index');
+        // Index + Show
+        Volt::route('events', 'events.index')->name('events.index');
 
-        // New (drawer/page create form)
-        Volt::route('events/new', 'corporate.events.create')
-            ->name('events.create');
-
-        // Show/read-only style page for an event (if you have one)
         Volt::route('events/{event}', 'events.show')
-            ->whereNumber('event')
-            ->name('events.show');
+            ->name('events.show')
+            ->whereNumber('event');
 
-        // (Optional) collaborators management (mirrors leagues’ page)
+        // Create
+        Volt::route('events/new', 'corporate.events.create')->name('events.create');
+
+        // (Optional) collaborators management
         Volt::route('events/{event}/access', 'corporate.events.access')
             ->whereNumber('event')
             ->name('events.access');
 
+        // Event kiosk manager (Volt page: resources/views/livewire/corporate/events/kiosks/index.blade.php)
+        Volt::route('events/{event}/kiosks', 'corporate.events.kiosks.index')
+            ->name('events.kiosks.index')
+            ->whereNumber('event');
+
+        // Event live scoring per line-time (Volt page: resources/views/livewire/corporate/events/live-scoring.blade.php)
+        Volt::route('events/{event}/lines/{lineTime}/live', 'corporate.events.live-scoring')
+            ->name('events.lines.live')
+            ->whereNumber('event')
+            ->whereNumber('lineTime');
+
+        // Event check-in QR (controller)
+        Route::get('events/{event}/checkin-qr.pdf', [\App\Http\Controllers\EventQrController::class, 'downloadCheckinQr'])
+            ->name('events.qr.pdf')
+            ->whereNumber('event');
+
+        // Rulesets index (shared)
         Volt::route('rulesets', 'rulesets.index')->name('rulesets.index');
     });
 
-// --- PUBLIC (no auth) ---
+// ======================
+// PUBLIC LEAGUE ROUTES
+// ======================
 Route::prefix('l/{uuid}')->group(function () {
     // Public check-in flow
     Route::get('/checkin', [PublicCheckinController::class, 'participants'])
@@ -269,19 +290,44 @@ Route::prefix('l/{uuid}')->group(function () {
         ->name('public.league.info');
 });
 
+// =====================
+// PUBLIC EVENT ROUTES
+// =====================
 Route::prefix('e/{uuid}')->group(function () {
+    // Public event landing
     Route::get('/', function (string $uuid) {
         $event = \App\Models\Event::query()->where('public_uuid', $uuid)->firstOrFail();
 
         return view('livewire/public/events/landing', ['event' => $event]);
     })->name('public.event.landing');
+
+    // Public event check-in flow (mirrors league)
+    Route::get('/checkin', [PublicCheckinController::class, 'participantsForEvent'])
+        ->name('public.event.checkin.participants');
+
+    Route::post('/checkin', [PublicCheckinController::class, 'participantsForEventSubmit'])
+        ->name('public.event.checkin.participants.submit');
+
+    Route::get('/checkin/{participant}', [PublicCheckinController::class, 'detailsForEvent'])
+        ->whereNumber('participant')->name('public.event.checkin.details');
+
+    Route::post('/checkin/{participant}', [PublicCheckinController::class, 'detailsForEventSubmit'])
+        ->whereNumber('participant')->name('public.event.checkin.details.submit');
+
+    // Public event scoring (personal-device / kiosk-handoff compatibles)
+    Route::get('/start-scoring/{checkin}', [PublicScoringController::class, 'startEvent'])
+        ->whereNumber('checkin')->name('public.event.scoring.start');
+
+    Route::get('/score/{score}', [PublicScoringController::class, 'recordEvent'])
+        ->whereNumber('score')->name('public.event.scoring.record');
+
+    Route::get('/scoring/{score}/summary', [PublicScoringController::class, 'summaryEvent'])
+        ->whereNumber('score')->name('public.event.scoring.summary');
 });
 
-/**
- * NEW: Public kiosk tablet routes (unguarded, tokenized)
- *  - /k/{token} shows the lane-filtered list of checked-in archers
- *  - /k/{token}/score/{checkin} hands off to the existing scoring record screen
- */
+// =======================
+// PUBLIC KIOSK (shared)
+// =======================
 Route::get('/k/{token}', [\App\Http\Controllers\KioskPublicController::class, 'landing'])
     ->name('kiosk.landing');
 
@@ -290,7 +336,7 @@ Route::get('/k/{token}/score/{checkin}', [\App\Http\Controllers\KioskPublicContr
     ->name('kiosk.score');
 
 /*
- * Below is used for stripe connect and payment flow
+ * Stripe Connect / payments
  */
 Route::middleware(['auth', 'corporate'])->group(function () {
     Route::get('/payments/connect/start', StartConnectForCurrentSellerController::class)

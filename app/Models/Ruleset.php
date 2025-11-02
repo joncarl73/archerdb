@@ -8,14 +8,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Ruleset extends Model
 {
     protected $fillable = [
-        'company_id', 'org', 'name', 'slug', 'description', 'schema', 'scoring_values', 'x_value', 'distance_m',
+        'company_id', 'org', 'name', 'slug', 'description', 'schema', 'scoring_values', 'x_value', 'distances_m', 'ends_per_session', 'arrows_per_end', 'lane_breakdown',
     ];
 
     protected $casts = [
         'schema' => 'array',   // JSON <-> array
         'scoring_values' => 'array',
         'x_value' => 'integer',
-        'distance_m',
+        'distances_m' => 'array',
+        'ends_per_session' => 'integer',
+        'arrows_per_end' => 'integer',
     ];
 
     public function company(): BelongsTo
