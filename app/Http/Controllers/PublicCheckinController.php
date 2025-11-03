@@ -266,20 +266,22 @@ class PublicCheckinController extends Controller
      */
     protected function fetchEventRoster(Event $event)
     {
-        // Uncomment once EventParticipant exists:
-        // if (class_exists(\App\Models\EventParticipant::class)) {
-        //     return \App\Models\EventParticipant::where('event_id', $event->id)
-        //         ->select(['id','first_name','last_name','email'])
-        //         ->orderBy('last_name')->orderBy('first_name')
-        //         ->get()
-        //         ->map(fn($p) => [
-        //             'id'    => (int) $p->id,
-        //             'name'  => trim(($p->first_name ?? '').' '.($p->last_name ?? '')) ?: 'Unknown',
-        //             'email' => (string) ($p->email ?? ''),
-        //         ]);
-        // }
+        // If you have EventParticipant, return that roster.
+        if (class_exists(\App\Models\EventParticipant::class)) {
+            return \App\Models\EventParticipant::query()
+                ->where('event_id', $event->id)
+                ->select(['id', 'first_name', 'last_name', 'email'])   // <- no "name" column
+                ->orderBy('last_name')
+                ->orderBy('first_name')
+                ->get()
+                ->map(fn ($p) => [
+                    'id' => (int) $p->id,
+                    'name' => trim(($p->first_name ?? '').' '.($p->last_name ?? '')) ?: 'Unknown',
+                    'email' => (string) ($p->email ?? ''),
+                ]);
+        }
 
-        return collect(); // free-form fallback
+        return collect(); // free-form path if no EventParticipant model
     }
 
     /**

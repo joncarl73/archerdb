@@ -301,28 +301,21 @@ Route::prefix('e/{uuid}')->group(function () {
         return view('livewire/public/events/landing', ['event' => $event]);
     })->name('public.event.landing');
 
-    // Public event check-in flow (mirrors league)
-    Route::get('/checkin', [PublicCheckinController::class, 'participantsForEvent'])
+    Route::get('/checkin/events', [\App\Http\Controllers\PublicEventCheckinController::class, 'participants'])
         ->name('public.event.checkin.participants');
 
-    Route::post('/checkin', [PublicCheckinController::class, 'participantsForEventSubmit'])
+    // submit participant + branch to personal/kiosk
+    Route::post('/checkin/events', [\App\Http\Controllers\PublicEventCheckinController::class, 'submitParticipants'])
         ->name('public.event.checkin.participants.submit');
 
-    Route::get('/checkin/{participant}', [PublicCheckinController::class, 'detailsForEvent'])
-        ->whereNumber('participant')->name('public.event.checkin.details');
+    // personal device start scoring handoff
+    Route::get('/scoring/start', [\App\Http\Controllers\PublicEventCheckinController::class, 'personalStart'])
+        ->name('public.scoring.start');
 
-    Route::post('/checkin/{participant}', [PublicCheckinController::class, 'detailsForEventSubmit'])
-        ->whereNumber('participant')->name('public.event.checkin.details.submit');
+    // kiosk info page (optional intermediate confirmation)
+    Route::get('/scoring/kiosk', [\App\Http\Controllers\PublicEventCheckinController::class, 'kioskWait'])
+        ->name('public.scoring.kiosk');
 
-    // Public event scoring (personal-device / kiosk-handoff compatibles)
-    Route::get('/start-scoring/{checkin}', [PublicScoringController::class, 'startEvent'])
-        ->whereNumber('checkin')->name('public.event.scoring.start');
-
-    Route::get('/score/{score}', [PublicScoringController::class, 'recordEvent'])
-        ->whereNumber('score')->name('public.event.scoring.record');
-
-    Route::get('/scoring/{score}/summary', [PublicScoringController::class, 'summaryEvent'])
-        ->whereNumber('score')->name('public.event.scoring.summary');
 });
 
 // =======================

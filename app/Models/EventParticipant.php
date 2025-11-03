@@ -3,30 +3,33 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class EventParticipant extends Model
 {
+    protected $table = 'event_participants';
+
     protected $fillable = [
-        'event_id',
-        'user_id',
-        'first_name',
-        'last_name',
-        'email',
+        'event_id', 'user_id', 'first_name', 'last_name', 'email', 'membership_id', 'club',
+        'division', 'bow_type', 'gender', 'is_para', 'uses_wheelchair', 'classification',
+        'age_class', 'meta',
     ];
 
-    public function event(): BelongsTo
+    protected $casts = [
+        'meta' => 'array',
+        'is_para' => 'boolean',
+        'uses_wheelchair' => 'boolean',
+    ];
+
+    // Expose a virtual "name" attribute for blades/controllers
+    protected $appends = ['name'];
+
+    public function getNameAttribute(): string
     {
-        return $this->belongsTo(Event::class);
+        return trim(($this->first_name ?? '').' '.($this->last_name ?? ''));
     }
 
-    // Convenience
-    public function getDisplayNameAttribute(): string
+    public function event()
     {
-        $fn = trim((string) ($this->first_name ?? ''));
-        $ln = trim((string) ($this->last_name ?? ''));
-        $name = trim("$fn $ln");
-
-        return $name !== '' ? $name : ($this->email ?: '#'.$this->id);
+        return $this->belongsTo(Event::class);
     }
 }

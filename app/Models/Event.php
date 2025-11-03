@@ -229,6 +229,11 @@ class Event extends Model
         return self::LANE_BREAKDOWN_SINGLE;
     }
 
+    public function participants()
+    {
+        return $this->hasMany(\App\Models\EventParticipant::class);
+    }
+
     public function checkins()
     {
         return $this->hasMany(\App\Models\EventCheckin::class);

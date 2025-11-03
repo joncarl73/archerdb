@@ -93,8 +93,6 @@ new class extends Component
               <flux:menu.item href="{{ route('corporate.events.qr.pdf', $event) }}" icon="qr-code">
                 Download check-in QR (PDF)
               </flux:menu.item>
-
-              {{-- If you add exports/scoring sheets for events, mirror the league items here --}}
             </flux:menu>
           </flux:dropdown>
         </div>
