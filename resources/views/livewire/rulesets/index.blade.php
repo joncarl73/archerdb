@@ -6,7 +6,6 @@ use App\Models\Ruleset;
 use App\Models\RulesetClass;
 use App\Models\TargetFace;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Str;
 use Livewire\Volt\Component;
 
 new class extends Component
@@ -39,13 +38,11 @@ new class extends Component
     public $L_classes;
 
     // -----------------------
-    // CREATE fields
+    // CREATE fields (slug removed)
     // -----------------------
     public ?string $c_org = null;
 
     public string $c_name = '';
-
-    public string $c_slug = '';
 
     public ?string $c_description = null;
 
@@ -59,32 +56,31 @@ new class extends Component
 
     public array $c_selected_classes = [];
 
-    public array $c_schema = [];                 // reserved for future detailed scoring JSON
+    public array $c_schema = [];                 // future detailed scoring JSON
 
     public string $c_scoring_csv = '1,2,3,4,5,6,7,8,9,10';
 
     public ?int $c_x_value = 10;
 
-    // NEW: distances
     public string $c_distances_csv = '18,50,60';
 
-    // NEW: session & lanes (moved from Event → Ruleset)
-    public int $c_ends_per_session = 10;         // e.g., 10 ends per day/session
+    // session & lanes
+    public int $c_ends_per_session = 10;
 
-    public int $c_arrows_per_end = 3;            // e.g., 3 arrows per end
+    public int $c_arrows_per_end = 3;
 
     public string $c_lane_breakdown = 'single';  // single|AB|ABCD|ABCDEF
 
+    public int $c_lanes_count = 10;
+
     // -----------------------
-    // EDIT fields
+    // EDIT fields (slug removed)
     // -----------------------
     public ?int $editingId = null;
 
     public ?string $e_org = null;
 
     public string $e_name = '';
-
-    public string $e_slug = '';
 
     public ?string $e_description = null;
 
@@ -104,15 +100,15 @@ new class extends Component
 
     public ?int $e_x_value = null;
 
-    // NEW: distances
     public string $e_distances_csv = '';
 
-    // NEW: session & lanes
     public ?int $e_ends_per_session = null;
 
     public ?int $e_arrows_per_end = null;
 
     public string $e_lane_breakdown = 'single';
+
+    public ?int $e_lanes_count = null;
 
     // -----------------------
     // Lifecycle
@@ -138,19 +134,16 @@ new class extends Component
             ->when($this->search !== '', function ($q) {
                 $s = "%{$this->search}%";
                 $q->where(fn ($w) => $w->where('name', 'like', $s)
-                    ->orWhere('slug', 'like', $s)
                     ->orWhere('org', 'like', $s));
             })
             ->orderBy($this->sort, $this->direction);
 
-        return [
-            'rulesets' => $q->paginate(10, ['*'], $this->pageName),
-        ];
+        return ['rulesets' => $q->paginate(10, ['*'], $this->pageName)];
     }
 
     public function sortBy(string $col): void
     {
-        if (! in_array($col, ['name', 'slug', 'org'], true)) {
+        if (! in_array($col, ['name', 'org'], true)) {
             return;
         }
 
@@ -160,7 +153,6 @@ new class extends Component
             $this->sort = $col;
             $this->direction = 'asc';
         }
-
         $this->resetPage($this->pageName);
     }
 
@@ -189,7 +181,6 @@ new class extends Component
         $vals = array_filter(array_map('trim', explode(',', $csv)), fn ($v) => $v !== '');
         $nums = [];
         foreach ($vals as $v) {
-            // strip trailing 'm'/'M'
             $v = preg_replace('/\s*m\s*$/i', '', $v);
             if ($v === '' || ! is_numeric($v)) {
                 continue;
@@ -232,7 +223,6 @@ new class extends Component
 
         $this->c_org = null;
         $this->c_name = '';
-        $this->c_slug = '';
         $this->c_description = null;
 
         $this->c_selected_disciplines = [];
@@ -244,22 +234,14 @@ new class extends Component
         $this->c_schema = [];
         $this->c_scoring_csv = '1,2,3,4,5,6,7,8,9,10';
         $this->c_x_value = 10;
-
         $this->c_distances_csv = '18,50,60';
 
-        // defaults for new fields
         $this->c_ends_per_session = 10;
         $this->c_arrows_per_end = 3;
         $this->c_lane_breakdown = 'single';
+        $this->c_lanes_count = 10;
 
         $this->showCreate = true;
-    }
-
-    public function updatedCName($val): void
-    {
-        if ($this->c_slug === '' || $this->c_slug === Str::slug($val)) {
-            $this->c_slug = Str::slug($val);
-        }
     }
 
     public function create(): void
@@ -268,29 +250,28 @@ new class extends Component
 
         $this->validate([
             'c_name' => ['required', 'string', 'max:255'],
-            'c_slug' => ['required', 'string', 'max:255', 'unique:rulesets,slug'],
             'c_scoring_csv' => ['required', 'string'],
             'c_x_value' => ['nullable', 'integer', 'min:0', 'max:100'],
             'c_distances_csv' => ['required', 'string'],
 
-            // NEW: session & lanes
             'c_ends_per_session' => ['required', 'integer', 'min:1', 'max:1000'],
             'c_arrows_per_end' => ['required', 'integer', 'min:1', 'max:12'],
             'c_lane_breakdown' => ['required', 'in:single,AB,ABCD,ABCDEF'],
+            'c_lanes_count' => ['required', 'integer', 'min:1', 'max:1000'],
         ], [], [
             'c_name' => 'name',
-            'c_slug' => 'slug',
             'c_scoring_csv' => 'scoring scale',
             'c_x_value' => 'X value',
             'c_distances_csv' => 'distances',
             'c_ends_per_session' => 'ends per session',
             'c_arrows_per_end' => 'arrows per end',
             'c_lane_breakdown' => 'lane breakdown',
+            'c_lanes_count' => 'lanes count',
         ]);
 
         $scale = $this->normalizeScoringCsv($this->c_scoring_csv);
         if (empty($scale)) {
-            $this->addError('c_scoring_csv', 'Enter a comma-separated list of integers (e.g., 1,2,3,4,5,6,7,8,9,10).');
+            $this->addError('c_scoring_csv', 'Enter a comma-separated list of integers.');
 
             return;
         }
@@ -309,17 +290,15 @@ new class extends Component
             'company_id' => auth()->user()->company_id,
             'org' => $this->c_org,
             'name' => $this->c_name,
-            'slug' => $this->c_slug,
             'description' => $this->c_description,
-            'schema' => $this->c_schema,   // future detailed scoring JSON
-            'scoring_values' => $scale,            // JSON array
-            'x_value' => $this->c_x_value, // int or null
-            'distances_m' => $distances,       // JSON array (meters)
-
-            // NEW: persisted on ruleset
+            'schema' => $this->c_schema,
+            'scoring_values' => $scale,
+            'x_value' => $this->c_x_value,
+            'distances_m' => $distances,
             'ends_per_session' => $this->c_ends_per_session,
             'arrows_per_end' => $this->c_arrows_per_end,
             'lane_breakdown' => $this->c_lane_breakdown,
+            'lanes_count' => $this->c_lanes_count,
         ]);
 
         // sync lookups
@@ -351,27 +330,23 @@ new class extends Component
 
         $this->e_org = $r->org;
         $this->e_name = $r->name;
-        $this->e_slug = $r->slug;
         $this->e_description = $r->description;
 
         $this->e_schema = $r->schema ?? [];
-
-        // hydrate selections
         $this->e_selected_disciplines = $r->disciplines()->pluck('id')->toArray();
         $this->e_selected_bow_types = $r->bowTypes()->pluck('id')->toArray();
         $this->e_selected_target_faces = $r->targetFaces()->pluck('id')->toArray();
         $this->e_selected_divisions = $r->divisions()->pluck('id')->toArray();
         $this->e_selected_classes = $r->classes()->pluck('id')->toArray();
 
-        // scoring + distances
         $this->e_scoring_csv = implode(',', array_map('intval', $r->scoring_values ?? []));
         $this->e_x_value = $r->x_value;
-        $this->e_distances_csv = implode(',', array_map('intval', $r->distances_m ?? [])); // show as CSV
+        $this->e_distances_csv = implode(',', array_map('intval', $r->distances_m ?? []));
 
-        // NEW: session & lanes
         $this->e_ends_per_session = $r->ends_per_session ?? 10;
         $this->e_arrows_per_end = $r->arrows_per_end ?? 3;
         $this->e_lane_breakdown = $r->lane_breakdown ?? 'single';
+        $this->e_lanes_count = $r->lanes_count ?? 10;
 
         $this->showEdit = true;
     }
@@ -390,24 +365,23 @@ new class extends Component
 
         $this->validate([
             'e_name' => ['required', 'string', 'max:255'],
-            'e_slug' => ['required', 'string', 'max:255', "unique:rulesets,slug,{$r->id}"],
             'e_scoring_csv' => ['required', 'string'],
             'e_x_value' => ['nullable', 'integer', 'min:0', 'max:100'],
             'e_distances_csv' => ['required', 'string'],
 
-            // NEW: session & lanes
             'e_ends_per_session' => ['required', 'integer', 'min:1', 'max:1000'],
             'e_arrows_per_end' => ['required', 'integer', 'min:1', 'max:12'],
             'e_lane_breakdown' => ['required', 'in:single,AB,ABCD,ABCDEF'],
+            'e_lanes_count' => ['required', 'integer', 'min:1', 'max:1000'],
         ], [], [
             'e_name' => 'name',
-            'e_slug' => 'slug',
             'e_scoring_csv' => 'scoring scale',
             'e_x_value' => 'X value',
             'e_distances_csv' => 'distances',
             'e_ends_per_session' => 'ends per session',
             'e_arrows_per_end' => 'arrows per end',
             'e_lane_breakdown' => 'lane breakdown',
+            'e_lanes_count' => 'lanes count',
         ]);
 
         $scale = $this->normalizeScoringCsv($this->e_scoring_csv);
@@ -430,17 +404,15 @@ new class extends Component
         $r->update([
             'org' => $this->e_org,
             'name' => $this->e_name,
-            'slug' => $this->e_slug,
             'description' => $this->e_description,
             'schema' => $this->e_schema,
             'scoring_values' => $scale,
             'x_value' => $this->e_x_value,
             'distances_m' => $distances,
-
-            // NEW
             'ends_per_session' => $this->e_ends_per_session,
             'arrows_per_end' => $this->e_arrows_per_end,
             'lane_breakdown' => $this->e_lane_breakdown,
+            'lanes_count' => $this->e_lanes_count,
         ]);
 
         // sync lookups
@@ -468,7 +440,6 @@ new class extends Component
     }
 };
 ?>
-
 <div class="mx-auto max-w-7xl relative">
   {{-- Header --}}
   <div class="sm:flex sm:items-center">
@@ -494,7 +465,7 @@ new class extends Component
 
   {{-- Search --}}
   <div class="mt-4 max-w-sm">
-    <flux:input icon="magnifying-glass" placeholder="Search name, slug, org…" wire:model.live.debounce.250ms="search" />
+    <flux:input icon="magnifying-glass" placeholder="Search name or org…" wire:model.live.debounce.250ms="search" />
   </div>
 
   {{-- Table --}}
@@ -508,18 +479,14 @@ new class extends Component
             </button>
           </th>
           <th class="hidden md:table-cell px-3 py-3.5 text-sm font-semibold">
-            <button wire:click="sortBy('slug')" class="flex items-center gap-1">
-              Slug @if($sort==='slug')<span class="text-xs opacity-70">{{ $direction==='asc'?'▲':'▼' }}</span>@endif
-            </button>
-          </th>
-          <th class="hidden md:table-cell px-3 py-3.5 text-sm font-semibold">
             <button wire:click="sortBy('org')" class="flex items-center gap-1">
               Org @if($sort==='org')<span class="text-xs opacity-70">{{ $direction==='asc'?'▲':'▼' }}</span>@endif
             </button>
           </th>
+          <th class="hidden xl:table-cell px-3 py-3.5 text-sm font-semibold">Session</th>
+          <th class="hidden xl:table-cell px-3 py-3.5 text-sm font-semibold">Lanes</th>
           <th class="hidden lg:table-cell px-3 py-3.5 text-sm font-semibold">Scoring</th>
           <th class="hidden lg:table-cell px-3 py-3.5 text-sm font-semibold">Distances</th>
-          <th class="hidden xl:table-cell px-3 py-3.5 text-sm font-semibold">Session</th>
           <th class="py-3.5 pl-3 pr-4 text-right text-sm font-semibold">Actions</th>
         </tr>
       </thead>
@@ -527,8 +494,29 @@ new class extends Component
         @foreach ($rulesets as $r)
           <tr>
             <td class="py-3.5 pl-4 pr-3 text-sm font-medium">{{ $r->name }}</td>
-            <td class="hidden md:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">{{ $r->slug }}</td>
             <td class="hidden md:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">{{ $r->org ?: '—' }}</td>
+
+            {{-- Session (ends × arrows, breakdown) --}}
+            <td class="hidden xl:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
+              @php
+                $lane = $r->lane_breakdown ?? 'single';
+                $ends = (int)($r->ends_per_session ?? 0);
+                $arr  = (int)($r->arrows_per_end ?? 0);
+                $slots = match($lane){ 'AB'=>2,'ABCD'=>4,'ABCDEF'=>6, default=>1 };
+              @endphp
+              @if($ends && $arr)
+                {{ $ends }}×{{ $arr }} <span class="text-gray-400">·</span> {{ strtoupper($lane) }} ({{ $slots }}/lane)
+              @else
+                —
+              @endif
+            </td>
+
+            {{-- Lanes count --}}
+            <td class="hidden xl:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
+              {{ (int)($r->lanes_count ?? 0) ?: '—' }}
+            </td>
+
+            {{-- Scoring --}}
             <td class="hidden lg:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
               @php
                 $vals = is_array($r->scoring_values ?? null) ? $r->scoring_values : [];
@@ -539,6 +527,8 @@ new class extends Component
                 <span class="text-gray-400"> · X={{ $r->x_value }}</span>
               @endif
             </td>
+
+            {{-- Distances --}}
             <td class="hidden lg:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
               @php
                 $d = is_array($r->distances_m ?? null) ? $r->distances_m : [];
@@ -546,19 +536,7 @@ new class extends Component
               @endphp
               <span class="whitespace-nowrap">{{ $dPreview }}</span><span class="text-gray-400">{{ empty($d) ? '' : ' m' }}</span>
             </td>
-            <td class="hidden xl:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
-              @php
-                $lane = $r->lane_breakdown ?? 'single';
-                $ends = (int)($r->ends_per_session ?? 0);
-                $arr  = (int)($r->arrows_per_end ?? 0);
-                $slots = $lane === 'single' ? 1 : mb_strlen($lane);
-              @endphp
-              @if($ends && $arr)
-                {{ $ends }}×{{ $arr }} <span class="text-gray-400">·</span> lanes: {{ strtoupper($lane) }} ({{ $slots }}/lane)
-              @else
-                —
-              @endif
-            </td>
+
             <td class="py-3.5 pl-3 pr-4 text-right text-sm">
               <div class="inline-flex items-center gap-2">
                 <flux:button size="sm" appearance="secondary" icon="pencil-square" wire:click="openEdit({{ $r->id }})">Edit</flux:button>
@@ -577,9 +555,7 @@ new class extends Component
     {{ $rulesets->links() }}
   </div>
 
-  {{-- =========================
-       CREATE DRAWER
-     ========================= --}}
+  {{-- CREATE DRAWER --}}
   @if($showCreate)
     <div class="fixed inset-0 z-40 bg-black/40" wire:click="$set('showCreate', false)" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w/full max-w-3xl bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -589,21 +565,16 @@ new class extends Component
       </div>
 
       <div class="flex-1 overflow-auto p-5 space-y-6">
-        {{-- Meta --}}
+        {{-- Meta (slug removed) --}}
         <div class="grid gap-4 md:grid-cols-3">
           <div>
             <flux:label>Org (optional)</flux:label>
             <flux:input wire:model.defer="c_org" />
           </div>
-          <div>
+          <div class="md:col-span-2">
             <flux:label>Name</flux:label>
-            <flux:input wire:model.live="c_name" />
+            <flux:input wire:model.defer="c_name" />
             @error('c_name')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
-          </div>
-          <div>
-            <flux:label>Slug</flux:label>
-            <flux:input wire:model.defer="c_slug" />
-            @error('c_slug')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
           <div class="md:col-span-3">
             <flux:label>Description (optional)</flux:label>
@@ -631,8 +602,8 @@ new class extends Component
           </div>
         </div>
 
-        {{-- NEW: Session & lanes --}}
-        <div class="grid gap-4 md:grid-cols-3">
+        {{-- Session & lanes --}}
+        <div class="grid gap-4 md:grid-cols-4">
           <div>
             <flux:label>Ends per session</flux:label>
             <flux:input type="number" min="1" wire:model.defer="c_ends_per_session" />
@@ -643,19 +614,26 @@ new class extends Component
             <flux:input type="number" min="1" max="12" wire:model.defer="c_arrows_per_end" />
             @error('c_arrows_per_end')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
-          <div>
-            <flux:label>Lane breakdown</flux:label>
-            <flux:select wire:model.defer="c_lane_breakdown">
-              <option value="single">Single (1 per lane)</option>
-              <option value="AB">A/B (2 per lane)</option>
-              <option value="ABCD">A/B/C/D (4 per lane)</option>
-              <option value="ABCDEF">A/B/C/D/E/F (6 per lane)</option>
-            </flux:select>
-            @error('c_lane_breakdown')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+          <div class="md:col-span-2 grid grid-cols-2 gap-4">
+            <div>
+              <flux:label>Lane breakdown</flux:label>
+              <flux:select wire:model.defer="c_lane_breakdown">
+                <option value="single">Single (1 per lane)</option>
+                <option value="AB">A/B (2 per lane)</option>
+                <option value="ABCD">A/B/C/D (4 per lane)</option>
+                <option value="ABCDEF">A/B/C/D/E/F (6 per lane)</option>
+              </flux:select>
+              @error('c_lane_breakdown')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+            </div>
+            <div>
+              <flux:label>Lanes count</flux:label>
+              <flux:input type="number" min="1" wire:model.defer="c_lanes_count" />
+              @error('c_lanes_count')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+            </div>
           </div>
         </div>
 
-        {{-- Lookups as checkboxes --}}
+        {{-- Lookups as checkboxes (unchanged) --}}
         <div class="grid gap-6 md:grid-cols-2">
           <div>
             <flux:label>Disciplines</flux:label>
@@ -724,9 +702,7 @@ new class extends Component
     </aside>
   @endif
 
-  {{-- =========================
-       EDIT DRAWER
-     ========================= --}}
+  {{-- EDIT DRAWER --}}
   @if($showEdit)
     <div class="fixed inset-0 z-40 bg-black/40" wire:click="$set('showEdit', false)" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w/full max-w-3xl bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -736,21 +712,16 @@ new class extends Component
       </div>
 
       <div class="flex-1 overflow-auto p-5 space-y-6">
-        {{-- Meta --}}
+        {{-- Meta (slug removed) --}}
         <div class="grid gap-4 md:grid-cols-3">
           <div>
             <flux:label>Org (optional)</flux:label>
             <flux:input wire:model.defer="e_org" />
           </div>
-          <div>
+          <div class="md:col-span-2">
             <flux:label>Name</flux:label>
             <flux:input wire:model.defer="e_name" />
             @error('e_name')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
-          </div>
-          <div>
-            <flux:label>Slug</flux:label>
-            <flux:input wire:model.defer="e_slug" />
-            @error('e_slug')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
           <div class="md:col-span-3">
             <flux:label>Description (optional)</flux:label>
@@ -778,8 +749,8 @@ new class extends Component
           </div>
         </div>
 
-        {{-- NEW: Session & lanes --}}
-        <div class="grid gap-4 md:grid-cols-3">
+        {{-- Session & lanes --}}
+        <div class="grid gap-4 md:grid-cols-4">
           <div>
             <flux:label>Ends per session</flux:label>
             <flux:input type="number" min="1" wire:model.defer="e_ends_per_session" />
@@ -790,15 +761,22 @@ new class extends Component
             <flux:input type="number" min="1" max="12" wire:model.defer="e_arrows_per_end" />
             @error('e_arrows_per_end')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
-          <div>
-            <flux:label>Lane breakdown</flux:label>
-            <flux:select wire:model.defer="e_lane_breakdown">
-              <option value="single">Single (1 per lane)</option>
-              <option value="AB">A/B (2 per lane)</option>
-              <option value="ABCD">A/B/C/D (4 per lane)</option>
-              <option value="ABCDEF">A/B/C/D/E/F (6 per lane)</option>
-            </flux:select>
-            @error('e_lane_breakdown')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+          <div class="md:col-span-2 grid grid-cols-2 gap-4">
+            <div>
+              <flux:label>Lane breakdown</flux:label>
+              <flux:select wire:model.defer="e_lane_breakdown">
+                <option value="single">Single (1 per lane)</option>
+                <option value="AB">A/B (2 per lane)</option>
+                <option value="ABCD">A/B/C/D (4 per lane)</option>
+                <option value="ABCDEF">A/B/C/D/E/F (6 per lane)</option>
+              </flux:select>
+              @error('e_lane_breakdown')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+            </div>
+            <div>
+              <flux:label>Lanes count</flux:label>
+              <flux:input type="number" min="1" wire:model.defer="e_lanes_count" />
+              @error('e_lanes_count')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
+            </div>
           </div>
         </div>
 

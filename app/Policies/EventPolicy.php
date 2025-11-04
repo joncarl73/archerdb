@@ -2,36 +2,64 @@
 
 namespace App\Policies;
 
+use App\Enums\UserRole;
 use App\Models\Event;
 use App\Models\User;
 
 class EventPolicy
 {
     /**
+     * Global override: platform admins can do everything.
+     */
+    public function before(User $user, string $ability): ?bool
+    {
+        return $user->role === UserRole::Administrator ? true : null;
+    }
+
+    /**
+     * Can see the events index.
+     * Let anyone who could plausibly interact with events view the list.
+     * (Tweak this if you want it tighter.)
+     */
+    public function viewAny(User $user): bool
+    {
+        // If you want this open to all authenticated users, just return true.
+        return true;
+    }
+
+    /**
      * Anyone who can see the league (owner/company owner/admin/collab) can see the event.
      */
     public function view(User $user, Event $event): bool
     {
-        // event owner
         if ((int) $user->id === (int) $event->owner_id) {
             return true;
         }
 
-        // company owner
         if ($event->company && (int) $event->company->owner_user_id === (int) $user->id) {
             return true;
         }
 
-        // platform admin
-        if ($user->role === \App\Enums\UserRole::Administrator) {
-            return true;
-        }
-
-        // any collaborator (owner or manager) can view
-        // NOTE: assumes $event->collaborators() many-to-many with pivot 'role'
+        // collaborators (owner or manager) can view
         return $event->collaborators()
             ->where('users.id', $user->id)
             ->exists();
+    }
+
+    /**
+     * Who can create a NEW event (class-level ability).
+     * Adjust the relationship checks to match your app:
+     *  - If you have company ownership/management, allow those users to create.
+     *  - Otherwise, return true to let any authenticated user create events.
+     */
+    public function create(User $user): bool
+    {
+        // Example: allow users who own or manage at least one company.
+        // Swap these to your real relationships, or just `return true;` to allow all signed-in users.
+        $ownsACompany = method_exists($user, 'ownedCompanies') && $user->ownedCompanies()->exists();
+        $managesACompany = method_exists($user, 'managedCompanies') && $user->managedCompanies()->exists();
+
+        return $ownsACompany || $managesACompany || true; // <- keep `true` if creation is broadly allowed
     }
 
     /**
@@ -40,18 +68,11 @@ class EventPolicy
      */
     public function update(User $user, Event $event): bool
     {
-        // event owner
         if ((int) $user->id === (int) $event->owner_id) {
             return true;
         }
 
-        // company owner
         if ($event->company && (int) $event->company->owner_user_id === (int) $user->id) {
-            return true;
-        }
-
-        // platform admin
-        if ($user->role === \App\Enums\UserRole::Administrator) {
             return true;
         }
 
@@ -83,26 +104,17 @@ class EventPolicy
             return false;
         }
 
-        // event owner
         if ((int) $user->id === (int) $event->owner_id) {
             return true;
         }
 
-        // company owner
         if ($event->company && (int) $event->company->owner_user_id === (int) $user->id) {
             return true;
         }
 
-        // platform admin
-        if ($user->role === \App\Enums\UserRole::Administrator) {
-            return true;
-        }
-
-        // collaborators: owners OR managers can manage kiosks
-        // If your pivot table is named differently, adjust 'event_users.role' to match.
         return $event->collaborators()
             ->where('users.id', $user->id)
-            ->whereIn('event_users.role', ['owner', 'manager'])
+            ->whereIn('event_users.role', ['owner', 'manager']) // adjust pivot table/column if needed
             ->exists();
     }
 
@@ -113,26 +125,17 @@ class EventPolicy
      */
     public function manageParticipants(User $user, Event $event): bool
     {
-        // event owner
         if ((int) $user->id === (int) $event->owner_id) {
             return true;
         }
 
-        // company owner
         if ($event->company && (int) $event->company->owner_user_id === (int) $user->id) {
             return true;
         }
 
-        // platform admin
-        if ($user->role === \App\Enums\UserRole::Administrator) {
-            return true;
-        }
-
-        // collaborators: owners OR managers can manage participants
-        // If your pivot table alias differs, change 'event_users.role' accordingly.
         return $event->collaborators()
             ->where('users.id', $user->id)
-            ->whereIn('event_users.role', ['owner', 'manager'])
+            ->whereIn('event_users.role', ['owner', 'manager']) // adjust pivot table/column if needed
             ->exists();
     }
 }

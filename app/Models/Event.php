@@ -21,12 +21,6 @@ class Event extends Model
 
     public const TYPE_CLOSED = 'closed';
 
-    // ---- Lane breakdown options (aligned with leagues)
-    // 'single' = 1 per lane, 'AB' = 2, 'ABCD' = 4, 'ABCDEF' = 6
-    public const LANE_BREAKDOWN_SINGLE = 'single';
-
-    public const LANE_BREAKDOWN_OPTS = ['single', 'AB', 'ABCD', 'ABCDEF'];
-
     protected $fillable = [
         'company_id',
         'public_uuid',
@@ -40,7 +34,6 @@ class Event extends Model
         // Parity with leagues:
         'type',              // 'open' | 'closed'
         'scoring_mode',      // 'personal_device' | 'tablet'
-        'lanes_count',       // int
 
         // Rules
         'ruleset_id',
@@ -63,10 +56,10 @@ class Event extends Model
             // Sensible defaults to mirror league creation UX
             $model->type ??= self::TYPE_OPEN;
             $model->scoring_mode ??= self::SCORING_PERSONAL;
-            $model->lane_breakdown ??= self::LANE_BREAKDOWN_SINGLE;
+
+            // NOTE: lanes are now Ruleset-owned; do NOT set lane_* here
         });
 
-        // Normalize persisted values for safety (in case form validation misses)
         static::saving(function ($model) {
             // Type
             if (! in_array($model->type, [self::TYPE_OPEN, self::TYPE_CLOSED], true)) {
@@ -78,13 +71,7 @@ class Event extends Model
                 $model->scoring_mode = self::SCORING_PERSONAL;
             }
 
-            // Lane breakdown
-            $model->lane_breakdown = $model->normalizeLaneBreakdown($model->lane_breakdown);
-
-            // lanes_count guard
-            if (! is_numeric($model->lanes_count) || (int) $model->lanes_count < 1) {
-                $model->lanes_count = 1;
-            }
+            // NOTE: no lane_* normalization here anymore
         });
     }
 
@@ -160,23 +147,8 @@ class Event extends Model
     }
 
     /**
-     * Return the lane slots used for assignment:
-     *  - 'single' => ['single']
-     *  - 'AB'     => ['A','B']
-     *  - 'ABCD'   => ['A','B','C','D']
-     *  - 'ABCDEF' => ['A','B','C','D','E','F']
-     */
-    public function laneSlots(): array
-    {
-        if ($this->lane_breakdown === self::LANE_BREAKDOWN_SINGLE) {
-            return ['single'];
-        }
-
-        return preg_split('//u', $this->lane_breakdown, -1, PREG_SPLIT_NO_EMPTY) ?: ['single'];
-    }
-
-    /**
-     * Number of shooters per lane based on lane_breakdown.
+     * Number of shooters per lane based on the linked ruleset's lane_breakdown.
+     * Falls back to 1 if no ruleset or unknown value.
      */
     public function slotsPerLane(): int
     {
@@ -185,49 +157,22 @@ class Event extends Model
         return $breakdown === 'single' ? 1 : mb_strlen($breakdown);
     }
 
+    /**
+     * Suggested capacity for a line time = lanes_count (from ruleset) × slotsPerLane()
+     * Note: the ruleset column name you introduced appears as "lanes_count" in your page;
+     * keep it consistent with your Ruleset model/migration.
+     */
     public function suggestedCapacity(): int
     {
-        return (int) $this->lanes_count * $this->slotsPerLane();
+        $lanes = (int) ($this->ruleset?->lanes_count ?? 1);
+
+        return max(1, $lanes * $this->slotsPerLane());
     }
 
-    // ---------------- Internals ----------------
-
-    /**
-     * Normalize lane_breakdown input into one of the allowed options.
-     */
-    protected function normalizeLaneBreakdown(?string $value): string
-    {
-        $v = trim((string) $value);
-
-        // Allow legacy values to pass-through cleanly
-        if ($v === 'double') {
-            return 'AB'; // migrate old enum('single','double') -> 'AB'
-        }
-
-        // Accept common aliases
-        $aliases = [
-            'single' => 'single',
-            'ab' => 'AB',
-            'a/b' => 'AB',
-            'abcd' => 'ABCD',
-            'a/b/c/d' => 'ABCD',
-            'abcdef' => 'ABCDEF',
-            'a/b/c/d/e/f' => 'ABCDEF',
-        ];
-
-        $vLower = strtolower($v);
-        if (isset($aliases[$vLower])) {
-            return $aliases[$vLower];
-        }
-
-        // Already a valid value?
-        if (in_array($v, self::LANE_BREAKDOWN_OPTS, true)) {
-            return $v;
-        }
-
-        // Fallback
-        return self::LANE_BREAKDOWN_SINGLE;
-    }
+    // ---------------- Legacy helpers removed ----------------
+    // laneSlots(), normalizeLaneBreakdown(), and any lane_* fields on Event
+    // have been intentionally removed since lanes now live on Ruleset.
+    // --------------------------------------------------------
 
     public function participants()
     {

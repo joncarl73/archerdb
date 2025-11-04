@@ -1,6 +1,8 @@
 <?php
 use App\Models\Event;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Schema;
 use Livewire\Volt\Component;
 
 new class extends Component
@@ -8,6 +10,12 @@ new class extends Component
     public Event $event;
 
     public string $checkinUrl = '';
+
+    /** @var array<int,int> line_time_id => count */
+    public array $ltAssignedCounts = [];
+
+    /** @var array<int,int> line_time_id => count */
+    public array $ltPreferredCounts = [];
 
     public function mount(Event $event): void
     {
@@ -18,6 +26,33 @@ new class extends Component
 
         // Public check-in URL for events
         $this->checkinUrl = route('public.event.checkin.participants', ['uuid' => $this->event->public_uuid]);
+
+        // ---- Aggregate participant counts per line time (assigned / preferred)
+        $lineTimeIds = $this->event->lineTimes->pluck('id')->all();
+
+        if (! empty($lineTimeIds) && Schema::hasTable('event_participants')) {
+            // Assigned counts (if your schema has this column)
+            if (Schema::hasColumn('event_participants', 'line_time_id')) {
+                $this->ltAssignedCounts = DB::table('event_participants')
+                    ->select('line_time_id', DB::raw('COUNT(*) as c'))
+                    ->where('event_id', $this->event->id)
+                    ->whereIn('line_time_id', $lineTimeIds)
+                    ->groupBy('line_time_id')
+                    ->pluck('c', 'line_time_id')
+                    ->all();
+            }
+
+            // Preferred counts (if your schema has this column)
+            if (Schema::hasColumn('event_participants', 'line_time_id')) {
+                $this->ltPreferredCounts = DB::table('event_participants')
+                    ->select('line_time_id', DB::raw('COUNT(*) as c'))
+                    ->where('event_id', $this->event->id)
+                    ->whereIn('line_time_id', $lineTimeIds)
+                    ->groupBy('line_time_id')
+                    ->pluck('c', 'line_time_id')
+                    ->all();
+            }
+        }
     }
 
     public function getIsTabletModeProperty(): bool
@@ -145,7 +180,7 @@ new class extends Component
                         dark:text-gray-200 dark:focus:border-indigo-400 dark:focus:ring-indigo-400" />
           <a href="{{ $checkinUrl }}" target="_blank"
              class="rounded-md bg-white px-3 py-2 text-sm font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                    dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
+                              dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10">
             Open
           </a>
         </div>
@@ -180,22 +215,39 @@ new class extends Component
               <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Start</th>
               <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">End</th>
               <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Capacity</th>
+              <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">Participants</th>
               <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100 dark:divide-white/10">
             @forelse($event->lineTimes as $lt)
               @php
-                $date = \Carbon\Carbon::parse($lt->line_date);
+                $date  = \Carbon\Carbon::parse($lt->line_date);
                 $start = \Carbon\Carbon::createFromFormat('H:i:s', $lt->start_time)->format('g:ia');
                 $end   = \Carbon\Carbon::createFromFormat('H:i:s', $lt->end_time)->format('g:ia');
+
+                // Counts prepared in mount()
+                $assigned = $this->ltAssignedCounts[$lt->id]  ?? 0;
+                $requested = $this->ltPreferredCounts[$lt->id] ?? 0;
+
+                // Show Assigned/Capacity and (optionally) Requested
+                $cap = (int) $lt->capacity;
               @endphp
               <tr>
                 <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">{{ $date->format('Y-m-d') }}</td>
                 <td class="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">{{ $date->format('l') }}</td>
                 <td class="px-3 py-4 text-sm text-gray-600 dark:text-gray-300">{{ $start }}</td>
                 <td class="px-3 py-4 text-sm text-gray-600 dark:text-gray-300">{{ $end }}</td>
-                <td class="px-3 py-4 text-sm text-gray-600 dark:text-gray-300">{{ $lt->capacity }}</td>
+                <td class="px-3 py-4 text-sm text-gray-600 dark:text-gray-300">{{ $cap }}</td>
+
+                <td class="px-3 py-4 text-sm">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-300">
+                      Assigned: {{ $assigned }} / {{ $cap }}
+                    </span>
+                  </div>
+                </td>
+
                 <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
                   <div class="inline-flex items-center gap-2">
                     @if($isTabletMode && $canManageKiosks)
@@ -212,7 +264,7 @@ new class extends Component
               </tr>
             @empty
               <tr>
-                <td colspan="6" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
+                <td colspan="7" class="py-8 px-4 text-sm text-gray-500 dark:text-gray-400">
                   No line times scheduled. Use the Events index → “Line Times” drawer to add them.
                 </td>
               </tr>

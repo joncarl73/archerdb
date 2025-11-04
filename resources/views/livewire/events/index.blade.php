@@ -40,8 +40,7 @@ new class extends Component
     public string $c_type = 'open';                    // open|closed
 
     public string $c_scoring_mode = 'personal_device'; // personal_device|tablet
-
-    public int $c_lanes_count = 10;                    // KEEP on event
+    // REMOVED: lanes on Event
 
     // edit drawer state + form
     public bool $showEdit = false;
@@ -63,8 +62,7 @@ new class extends Component
     public string $e_type = 'open';
 
     public string $e_scoring_mode = 'personal_device';
-
-    public int $e_lanes_count = 10;
+    // REMOVED: lanes on Event
 
     // -----------------------
     // Line Times drawer
@@ -81,7 +79,7 @@ new class extends Component
 
     public ?string $lt_end_time = null;    // HH:MM
 
-    public ?int $lt_capacity = 48;
+    public ?int $lt_capacity = 1;
 
     public ?string $lt_notes = null;
 
@@ -89,7 +87,7 @@ new class extends Component
     public array $lt_dates_options = [];
 
     // -----------------------
-    // Ruleset drawer (select + edit ruleset scoring fields)
+    // Ruleset drawer (selection only)
     // -----------------------
     public bool $showRuleset = false;
 
@@ -104,17 +102,15 @@ new class extends Component
 
     public ?string $rs_selected_description = null;
 
-    // NEW: ruleset scoring fields (editable here)
-    public ?int $rs_ends_per_session = null;
-
-    public ?int $rs_arrows_per_end = null;
-
-    public string $rs_lane_breakdown = 'single'; // single|AB|ABCD|ABCDEF
-
     // ------------ helpers ------------
     protected function slotsPerLaneFrom(string $breakdown): int
     {
-        return $breakdown === 'single' ? 1 : mb_strlen($breakdown);
+        return match ($breakdown) {
+            'AB' => 2,
+            'ABCD' => 4,
+            'ABCDEF' => 6,
+            default => 1, // 'single' or unknown
+        };
     }
 
     public function with(): array
@@ -172,7 +168,6 @@ new class extends Component
 
         $this->c_type = 'open';
         $this->c_scoring_mode = 'personal_device';
-        $this->c_lanes_count = 10;
     }
 
     public function updatedCKind(string $value): void
@@ -194,10 +189,8 @@ new class extends Component
             'c_kind' => ['required'],
             'c_starts_on' => ['required', 'date'],
             'c_ends_on' => ['nullable', 'date'],
-
             'c_type' => ['required', 'in:open,closed'],
             'c_scoring_mode' => ['required', 'in:personal_device,tablet'],
-            'c_lanes_count' => ['required', 'integer', 'min:1', 'max:1000'],
         ], [], [
             'c_title' => 'title',
             'c_kind' => 'kind',
@@ -205,7 +198,6 @@ new class extends Component
             'c_ends_on' => 'ends on',
             'c_type' => 'registration type',
             'c_scoring_mode' => 'scoring mode',
-            'c_lanes_count' => 'lanes count',
         ]);
 
         if ($this->c_kind === EventKind::SingleDay->value) {
@@ -231,10 +223,8 @@ new class extends Component
             'starts_on' => $this->c_starts_on,
             'ends_on' => $this->c_ends_on,
             'is_published' => $this->c_is_published,
-
             'type' => $this->c_type,
             'scoring_mode' => $this->c_scoring_mode,
-            'lanes_count' => $this->c_lanes_count,
         ]);
 
         if (method_exists($event, 'collaborators')) {
@@ -268,7 +258,6 @@ new class extends Component
 
         $this->e_type = (string) ($event->type ?? 'open');
         $this->e_scoring_mode = (string) ($event->scoring_mode ?? 'personal_device');
-        $this->e_lanes_count = (int) ($event->lanes_count ?? 10);
 
         $this->showEdit = true;
     }
@@ -308,10 +297,8 @@ new class extends Component
             'e_kind' => ['required'],
             'e_starts_on' => ['required', 'date'],
             'e_ends_on' => ['nullable', 'date'],
-
             'e_type' => ['required', 'in:open,closed'],
             'e_scoring_mode' => ['required', 'in:personal_device,tablet'],
-            'e_lanes_count' => ['required', 'integer', 'min:1', 'max:1000'],
         ], [], [
             'e_title' => 'title',
             'e_kind' => 'kind',
@@ -319,7 +306,6 @@ new class extends Component
             'e_ends_on' => 'ends on',
             'e_type' => 'registration type',
             'e_scoring_mode' => 'scoring mode',
-            'e_lanes_count' => 'lanes count',
         ]);
 
         if ($this->e_kind === EventKind::SingleDay->value) {
@@ -344,10 +330,8 @@ new class extends Component
             'starts_on' => $this->e_starts_on,
             'ends_on' => $this->e_ends_on,
             'is_published' => $this->e_is_published,
-
             'type' => $this->e_type,
             'scoring_mode' => $this->e_scoring_mode,
-            'lanes_count' => $this->e_lanes_count,
         ]);
 
         $this->closeEdit();
@@ -396,10 +380,10 @@ new class extends Component
         $this->lt_start_time = null;
         $this->lt_end_time = null;
 
-        // Default capacity now comes from ruleset lane_breakdown
+        // Capacity from linked ruleset (read-only here)
         $breakdown = $event->ruleset?->lane_breakdown ?: 'single';
-        $slotsPerLane = $this->slotsPerLaneFrom($breakdown);
-        $this->lt_capacity = (int) ($event->lanes_count ?? 1) * $slotsPerLane;
+        $lanes = (int) ($event->ruleset?->lanes_count ?? 1);
+        $this->lt_capacity = max(1, $lanes * $this->slotsPerLaneFrom($breakdown));
 
         $this->lt_notes = null;
         $this->showLineTimes = true;
@@ -462,7 +446,7 @@ new class extends Component
     }
 
     // -----------------------
-    // Ruleset Drawer (select + edit fields)
+    // Ruleset Drawer (selection only)
     // -----------------------
     public function openRuleset(int $eventId): void
     {
@@ -482,18 +466,13 @@ new class extends Component
         $rulesets = Ruleset::query()
             ->where('company_id', auth()->user()->company_id)
             ->orderBy('name')
-            ->get(['id', 'name', 'description', 'ends_per_session', 'arrows_per_end', 'lane_breakdown']);
+            ->get(['id', 'name', 'description']);
 
         $this->rs_options = $rulesets->pluck('name', 'id')->toArray();
         $this->rs_selected_id = $event->ruleset_id ?? null;
 
         $sel = $this->rs_selected_id ? $rulesets->firstWhere('id', $this->rs_selected_id) : null;
         $this->rs_selected_description = $sel?->description;
-
-        // load ruleset scoring fields (or sensible defaults)
-        $this->rs_ends_per_session = $sel?->ends_per_session ?? 10;
-        $this->rs_arrows_per_end = $sel?->arrows_per_end ?? 3;
-        $this->rs_lane_breakdown = $sel?->lane_breakdown ?? 'single';
 
         $this->showRuleset = true;
     }
@@ -503,12 +482,9 @@ new class extends Component
         $rs = Ruleset::query()
             ->where('company_id', auth()->user()->company_id)
             ->whereKey($value)
-            ->first(['description', 'ends_per_session', 'arrows_per_end', 'lane_breakdown']);
+            ->first(['description']);
 
         $this->rs_selected_description = $rs?->description;
-        $this->rs_ends_per_session = $rs?->ends_per_session ?? 10;
-        $this->rs_arrows_per_end = $rs?->arrows_per_end ?? 3;
-        $this->rs_lane_breakdown = $rs?->lane_breakdown ?? 'single';
     }
 
     public function saveRuleset(): void
@@ -529,32 +505,9 @@ new class extends Component
             return;
         }
 
-        // Persist selection on the event
+        // Persist selection only
         $event->ruleset_id = $this->rs_selected_id;
         $event->save();
-
-        // Also persist the scoring fields onto the selected ruleset (company owns it)
-        if ($this->rs_selected_id) {
-            $this->validate([
-                'rs_ends_per_session' => ['required', 'integer', 'min:1', 'max:1000'],
-                'rs_arrows_per_end' => ['required', 'integer', 'min:1', 'max:12'],
-                'rs_lane_breakdown' => ['required', 'in:single,AB,ABCD,ABCDEF'],
-            ], [], [
-                'rs_ends_per_session' => 'ends per day',
-                'rs_arrows_per_end' => 'arrows per end',
-                'rs_lane_breakdown' => 'lane breakdown',
-            ]);
-
-            $ruleset = Ruleset::query()
-                ->where('company_id', auth()->user()->company_id)
-                ->findOrFail($this->rs_selected_id);
-
-            $ruleset->update([
-                'ends_per_session' => $this->rs_ends_per_session,
-                'arrows_per_end' => $this->rs_arrows_per_end,
-                'lane_breakdown' => $this->rs_lane_breakdown,
-            ]);
-        }
 
         session()->flash('ok', 'Ruleset updated.');
         $this->showRuleset = false;
@@ -577,18 +530,12 @@ new class extends Component
 
         $this->rs_selected_id = null;
         $this->rs_selected_description = null;
-        $this->rs_ends_per_session = 10;
-        $this->rs_arrows_per_end = 3;
-        $this->rs_lane_breakdown = 'single';
 
         session()->flash('ok', 'Ruleset cleared.');
         $this->showRuleset = false;
     }
 };
 ?>
-<!-- The Blade/HTML below is identical to your structure, with the
-     three event-level fields removed from Create/Edit and added into the Ruleset drawer. -->
-
 <div class="mx-auto max-w-7xl relative">
   {{-- Header --}}
   <div class="sm:flex sm:items-center">
@@ -631,6 +578,7 @@ new class extends Component
                 @endif
               </button>
             </th>
+                        <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white text-center">Published</th>
             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Kind</th>
             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">
               <button wire:click="sortBy('starts_on')" class="flex items-center gap-1">
@@ -658,15 +606,27 @@ new class extends Component
             <tr>
               <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
                 <div class="flex items-center gap-2">
-                  <span class="underline-offset-2">{{ $event->title }}</span>
+                  <span class="underline-offset-2">
+                    <a href="{{ route('corporate.events.show',$event->id) }}"
+                    class="hover:underline hover:text-indigo-600 dark:hover:text-indigo-400">
+                      {{ $event->title }}
+                    </a>
+                    <div class="mt-1">
+                        <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-inset ring-gray-300 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10">
+                            Created by {{ $event->company->company_name ?? 'Unknown' }}
+                        </span>
+                    </div>
+                  </span>
+                </div>
+              </td>
+
+              <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
                   @if($event->is_published)
                     <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">Published</span>
                   @else
                     <span class="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-800 dark:bg-white/10 dark:text-zinc-300">Draft</span>
                   @endif
-                </div>
               </td>
-
               <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
                 {{ is_string($event->kind) ? $event->kind : $event->kind->value }}
               </td>
@@ -801,12 +761,6 @@ new class extends Component
             @error('c_scoring_mode') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
           </div>
 
-          <div>
-            <flux:label>Lanes count</flux:label>
-            <flux:input type="number" min="1" wire:model.defer="c_lanes_count" />
-            @error('c_lanes_count') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
-          </div>
-
           <div class="flex items-center gap-3 md:col-span-2">
             <flux:checkbox wire:model="c_is_published" />
             <flux:label class="!mb-0">Published</flux:label>
@@ -898,12 +852,6 @@ new class extends Component
             @error('e_scoring_mode') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
           </div>
 
-          <div>
-            <flux:label>Lanes count</flux:label>
-            <flux:input type="number" min="1" wire:model.defer="e_lanes_count" />
-            @error('e_lanes_count') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
-          </div>
-
           <div class="flex items-center gap-3 md:col-span-2">
             <flux:checkbox wire:model="e_is_published" />
             <flux:label class="!mb-0">Published</flux:label>
@@ -918,7 +866,7 @@ new class extends Component
     </aside>
   @endif
 
-  {{-- LINE TIMES Drawer (unchanged layout, new capacity logic already in component) --}}
+  {{-- LINE TIMES Drawer --}}
   @if($showLineTimes)
     <div class="fixed inset-0 z-40 bg-black/40" x-on:click="$wire.showLineTimes=false" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -1024,7 +972,7 @@ new class extends Component
     </aside>
   @endif
 
-  {{-- RULESET Drawer --}}
+  {{-- RULESET Drawer (selection only) --}}
   @if($showRuleset)
     <div class="fixed inset-0 z-40 bg-black/40" x-on:click="$wire.showRuleset=false" aria-hidden="true"></div>
     <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
@@ -1049,32 +997,6 @@ new class extends Component
           <div class="rounded-xl border border-gray-200 dark:border-zinc-700 p-3">
             <div class="text-xs uppercase tracking-wide text-gray-500 mb-1">Description</div>
             <div class="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-line">{{ $rs_selected_description }}</div>
-          </div>
-        @endif
-
-        {{-- NEW: Ruleset scoring fields --}}
-        @if($rs_selected_id)
-          <div class="grid gap-4 md:grid-cols-3">
-            <div>
-              <flux:label>Ends per day</flux:label>
-              <flux:input type="number" min="1" wire:model.defer="rs_ends_per_session" />
-              @error('rs_ends_per_session') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
-            </div>
-            <div>
-              <flux:label>Arrows per end</flux:label>
-              <flux:input type="number" min="1" max="12" wire:model.defer="rs_arrows_per_end" />
-              @error('rs_arrows_per_end') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
-            </div>
-            <div>
-              <flux:label>Lane breakdown</flux:label>
-              <flux:select wire:model="rs_lane_breakdown">
-                <option value="single">Single (1 per lane)</option>
-                <option value="AB">A/B (2 per lane)</option>
-                <option value="ABCD">A/B/C/D (4 per lane)</option>
-                <option value="ABCDEF">A/B/C/D/E/F (6 per lane)</option>
-              </flux:select>
-              @error('rs_lane_breakdown') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
-            </div>
           </div>
         @endif
       </div>
