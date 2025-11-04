@@ -246,6 +246,101 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
             ->name('events.qr.pdf')
             ->whereNumber('event');
 
+        // Participants TABLE page (Volt file: resources/views/livewire/events/participants.blade.php)
+        Volt::route('events/{event}/participants', 'events.participants')
+            ->name('events.participants.index')
+            ->whereNumber('event');
+
+        // Import confirm (Volt file: resources/views/livewire/corporate/events/participants/import-confirm.blade.php)
+        // Keep {import} to match your leagues pattern (import staging row id). We'll make it optional for first pass.
+        Volt::route(
+            'events/{event}/participants/import/confirm/{import?}',
+            'corporate.events.participants.import-confirm'
+        )->name('events.participants.import.confirm')
+            ->whereNumber('event');
+
+        // Start Checkout (controller) – event-specific counterpart to StartParticipantImportCheckoutController
+        Route::post(
+            'events/{event}/participants/import/{import}/start-checkout',
+            \App\Http\Controllers\StartEventParticipantImportCheckoutController::class
+        )->name('events.participants.import.startCheckout')
+            ->whereNumber('event')
+            ->whereNumber('import');
+
+        // Return page after Stripe (controller → blade) – event-specific counterpart
+        Route::get(
+            'events/{event}/participants/import/return',
+            \App\Http\Controllers\EventParticipantImportReturnController::class
+        )->name('events.participants.import.return')
+            ->whereNumber('event');
+
+        // CSV template download (events)
+        // routes/web.php  (inside the corporate events group)
+        Route::get('events/{event}/participants/template.csv', function (\App\Models\Event $event) {
+            \Illuminate\Support\Facades\Gate::authorize('update', $event);
+
+            // Limit strictly to the columns accepted by stageImportCsv() / mapHeaders()
+            $columns = [
+                'first_name',
+                'last_name',
+                'email',
+                'division_name',
+                'bow_type',
+                'is_para',
+                'uses_wheelchair',
+                'notes',
+            ];
+
+            // Optional example rows to help managers know the format
+            $exampleRows = [
+                ['Alex', 'Morgan', 'alex@example.com', 'Senior', 'Recurve', 'false', 'false', ''],
+                ['Jamie', 'Lee', 'jamie@example.com', 'Masters', 'Compound', 'true', 'false', 'Para classification TBC'],
+            ];
+
+            // Build CSV output
+            $out = fopen('php://temp', 'r+');
+            // UTF-8 BOM for Excel friendliness
+            fwrite($out, chr(0xEF).chr(0xBB).chr(0xBF));
+            fputcsv($out, $columns);
+            foreach ($exampleRows as $row) {
+                fputcsv($out, $row);
+            }
+            rewind($out);
+            $csv = stream_get_contents($out);
+            fclose($out);
+
+            return response($csv, 200, [
+                'Content-Type' => 'text/csv; charset=UTF-8',
+                'Content-Disposition' => 'attachment; filename="event-participants-template-'.$event->id.'.csv"',
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            ]);
+        })->name('events.participants.template')->whereNumber('event');
+
+        // (Optional) Export existing participants (events)
+        Route::get('events/{event}/participants/export.csv', function (\App\Models\Event $event) {
+            Gate::authorize('view', $event);
+
+            $filename = 'participants-export-'.$event->id.'.csv';
+
+            return response()->streamDownload(function () use ($event) {
+                $out = fopen('php://output', 'w');
+                fputcsv($out, ['first_name', 'last_name', 'email', 'member']);
+                $event->participants()
+                    ->orderBy('last_name')->orderBy('first_name')
+                    ->chunk(500, function ($chunk) use ($out) {
+                        foreach ($chunk as $p) {
+                            fputcsv($out, [
+                                $p->first_name,
+                                $p->last_name,
+                                $p->email,
+                                $p->user_id ? 'yes' : 'no',
+                            ]);
+                        }
+                    });
+                fclose($out);
+            }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
+        })->name('events.participants.export')->whereNumber('event');
+
         // Rulesets index (shared)
         Volt::route('rulesets', 'rulesets.index')->name('rulesets.index');
     });
@@ -310,11 +405,11 @@ Route::prefix('e/{uuid}')->group(function () {
 
     // personal device start scoring handoff
     Route::get('/scoring/start', [\App\Http\Controllers\PublicEventCheckinController::class, 'personalStart'])
-        ->name('public.scoring.start');
+        ->name('public.event.scoring.start');
 
     // kiosk info page (optional intermediate confirmation)
     Route::get('/scoring/kiosk', [\App\Http\Controllers\PublicEventCheckinController::class, 'kioskWait'])
-        ->name('public.scoring.kiosk');
+        ->name('public.event.scoring.kiosk');
 
 });
 

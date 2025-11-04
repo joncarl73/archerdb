@@ -9,9 +9,7 @@ class EventParticipant extends Model
     protected $table = 'event_participants';
 
     protected $fillable = [
-        'event_id', 'user_id', 'first_name', 'last_name', 'email', 'membership_id', 'club',
-        'division', 'bow_type', 'gender', 'is_para', 'uses_wheelchair', 'classification',
-        'age_class', 'meta',
+        'event_id', 'user_id', 'notes', 'first_name', 'last_name', 'email', 'division_name', 'bow_type', 'is_para', 'uses_wheelchair', 'line_time_id', 'assigned_lane', 'assigned_slot', 'meta',
     ];
 
     protected $casts = [

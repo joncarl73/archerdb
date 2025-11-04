@@ -99,7 +99,37 @@ class EventPolicy
         }
 
         // collaborators: owners OR managers can manage kiosks
-        // If you need the table name (like in LeaguePolicy), use 'event_users.role'
+        // If your pivot table is named differently, adjust 'event_users.role' to match.
+        return $event->collaborators()
+            ->where('users.id', $user->id)
+            ->whereIn('event_users.role', ['owner', 'manager'])
+            ->exists();
+    }
+
+    /**
+     * Manage participants (CSV imports, list, etc.)
+     * Allowed for event owner, company owner, platform admin,
+     * and collaborators with role owner OR manager.
+     */
+    public function manageParticipants(User $user, Event $event): bool
+    {
+        // event owner
+        if ((int) $user->id === (int) $event->owner_id) {
+            return true;
+        }
+
+        // company owner
+        if ($event->company && (int) $event->company->owner_user_id === (int) $user->id) {
+            return true;
+        }
+
+        // platform admin
+        if ($user->role === \App\Enums\UserRole::Administrator) {
+            return true;
+        }
+
+        // collaborators: owners OR managers can manage participants
+        // If your pivot table alias differs, change 'event_users.role' accordingly.
         return $event->collaborators()
             ->where('users.id', $user->id)
             ->whereIn('event_users.role', ['owner', 'manager'])

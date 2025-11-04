@@ -72,26 +72,52 @@ new class extends Component
             </flux:button>
           @endif
 
+          {{-- Participants (table/index) --}}
+          <flux:button
+            as="a"
+            href="{{ route('corporate.events.participants.index', $event) }}"
+            variant="primary"
+            color="indigo"
+            icon="users">
+            Participants
+          </flux:button>
+
           {{-- Actions dropdown --}}
           <flux:dropdown>
             <flux:button icon:trailing="chevron-down">Actions</flux:button>
             <flux:menu class="min-w-64">
-              {{-- If you have an event info editor, wire it here (mirroring leagues.info.edit) --}}
-              {{-- @if($canUpdateEvent)
-                <flux:menu.item href="{{ route('corporate.events.info.edit', $event) }}" icon="pencil-square">
-                  Create/Update event info
-                </flux:menu.item>
-              @endif --}}
-
-              {{-- Public event landing (already in your routes) --}}
+              {{-- Public event landing --}}
               <flux:menu.item href="{{ route('public.event.landing', ['uuid' => $event->public_uuid]) }}"
-                               target="_blank" icon="arrow-top-right-on-square">
+                              target="_blank" icon="arrow-top-right-on-square">
                 View public page
               </flux:menu.item>
 
               {{-- QR for public check-in (events) --}}
               <flux:menu.item href="{{ route('corporate.events.qr.pdf', $event) }}" icon="qr-code">
                 Download check-in QR (PDF)
+              </flux:menu.item>
+
+              <flux:menu.separator />
+
+              {{-- Participants: Upload CSV (open events) --}}
+              <flux:menu.item
+                href="{{ route('corporate.events.participants.import.confirm', $event) }}"
+                icon="arrow-up-tray">
+                Upload participants (CSV)
+              </flux:menu.item>
+
+              {{-- CSV template --}}
+              <flux:menu.item
+                href="{{ route('corporate.events.participants.template', $event) }}"
+                icon="document-arrow-down">
+                Download CSV template
+              </flux:menu.item>
+
+              {{-- Export current participants (optional, if you enabled the route) --}}
+              <flux:menu.item
+                href="{{ route('corporate.events.participants.export', $event) }}"
+                icon="table-cells">
+                Export participants (CSV)
               </flux:menu.item>
             </flux:menu>
           </flux:dropdown>

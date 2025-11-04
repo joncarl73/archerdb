@@ -10,6 +10,7 @@ class ParticipantImport extends Model
     protected $fillable = [
         'public_uuid',
         'league_id',
+        'event_id',
         'user_id',
         'file_path',
         'original_name',
@@ -23,6 +24,12 @@ class ParticipantImport extends Model
         'stripe_payment_intent_id',
         'processed_at',
         'error_text',
+        'meta',
+    ];
+
+    protected $casts = [
+        'meta' => 'array',
+        'processed_at' => 'datetime',
     ];
 
     protected static function booted(): void
@@ -57,5 +64,11 @@ class ParticipantImport extends Model
     public function isProcessable(): bool
     {
         return $this->status === 'paid' && $this->processed_at === null;
+    }
+
+    // ...
+    public function event()
+    {
+        return $this->belongsTo(\App\Models\Event::class);
     }
 }

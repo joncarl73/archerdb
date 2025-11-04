@@ -234,6 +234,11 @@ class Event extends Model
         return $this->hasMany(\App\Models\EventParticipant::class);
     }
 
+    public function participantImports()
+    {
+        return $this->hasMany(\App\Models\ParticipantImport::class);
+    }
+
     public function checkins()
     {
         return $this->hasMany(\App\Models\EventCheckin::class);
