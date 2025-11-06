@@ -2,6 +2,7 @@
 
 // ← NEW
 use App\Http\Controllers\CheckoutReturnController;
+use App\Http\Controllers\ExportParticipantsController;
 use App\Http\Controllers\LeagueQrController;
 use App\Http\Controllers\ManageProPortalController;
 use App\Http\Controllers\ParticipantImportReturnController;
@@ -11,6 +12,7 @@ use App\Http\Controllers\PublicCheckinController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
+use App\Http\Controllers\ResetParticipantLanesController;
 use App\Http\Controllers\StartConnectForCurrentSellerController;
 use App\Http\Controllers\StartLeagueCheckoutController;
 use App\Http\Controllers\StartParticipantImportCheckoutController;
@@ -317,29 +319,12 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
         })->name('events.participants.template')->whereNumber('event');
 
         // (Optional) Export existing participants (events)
-        Route::get('events/{event}/participants/export.csv', function (\App\Models\Event $event) {
-            Gate::authorize('view', $event);
 
-            $filename = 'participants-export-'.$event->id.'.csv';
+        Route::get('events/{event}/participants/export', [ExportParticipantsController::class, '__invoke'])
+            ->name('events.participants.export');
 
-            return response()->streamDownload(function () use ($event) {
-                $out = fopen('php://output', 'w');
-                fputcsv($out, ['first_name', 'last_name', 'email', 'member']);
-                $event->participants()
-                    ->orderBy('last_name')->orderBy('first_name')
-                    ->chunk(500, function ($chunk) use ($out) {
-                        foreach ($chunk as $p) {
-                            fputcsv($out, [
-                                $p->first_name,
-                                $p->last_name,
-                                $p->email,
-                                $p->user_id ? 'yes' : 'no',
-                            ]);
-                        }
-                    });
-                fclose($out);
-            }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
-        })->name('events.participants.export')->whereNumber('event');
+        Route::get('events/{event}/participants/reset', [ResetParticipantLanesController::class, '__invoke'])
+            ->name('events.participants.reset');
 
         // Rulesets index (shared)
         Volt::route('rulesets', 'rulesets.index')->name('rulesets.index');

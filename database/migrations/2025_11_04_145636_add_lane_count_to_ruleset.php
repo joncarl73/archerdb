@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::table('rulesets', function (Blueprint $table) {
             // choose a sensible default; 10 is common for indoor lanes
-            $table->unsignedInteger('lanes_count')->default(10)->after('lane_breakdown');
+            $table->unsignedInteger('lane_count')->default(10)->after('lane_breakdown');
         });
     }
 

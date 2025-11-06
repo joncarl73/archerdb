@@ -298,7 +298,7 @@ new class extends Component
             'ends_per_session' => $this->c_ends_per_session,
             'arrows_per_end' => $this->c_arrows_per_end,
             'lane_breakdown' => $this->c_lane_breakdown,
-            'lanes_count' => $this->c_lanes_count,
+            'lane_count' => $this->c_lanes_count,
         ]);
 
         // sync lookups
@@ -346,7 +346,7 @@ new class extends Component
         $this->e_ends_per_session = $r->ends_per_session ?? 10;
         $this->e_arrows_per_end = $r->arrows_per_end ?? 3;
         $this->e_lane_breakdown = $r->lane_breakdown ?? 'single';
-        $this->e_lanes_count = $r->lanes_count ?? 10;
+        $this->e_lanes_count = $r->lane_count ?? 10;
 
         $this->showEdit = true;
     }
@@ -412,7 +412,7 @@ new class extends Component
             'ends_per_session' => $this->e_ends_per_session,
             'arrows_per_end' => $this->e_arrows_per_end,
             'lane_breakdown' => $this->e_lane_breakdown,
-            'lanes_count' => $this->e_lanes_count,
+            'lane_count' => $this->e_lanes_count,
         ]);
 
         // sync lookups
@@ -513,7 +513,7 @@ new class extends Component
 
             {{-- Lanes count --}}
             <td class="hidden xl:table-cell px-3 py-3.5 text-sm text-gray-600 dark:text-gray-300">
-              {{ (int)($r->lanes_count ?? 0) ?: '—' }}
+              {{ (int)($r->lane_count ?? 0) ?: '—' }}
             </td>
 
             {{-- Scoring --}}
