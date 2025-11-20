@@ -5,6 +5,14 @@ use Livewire\Volt\Component;
 use Livewire\WithFileUploads;
 use Livewire\WithPagination;
 
+/**
+ * Event Participants Manager
+ *
+ * QOL:
+ * - Lane-lock designator switched from SC -> LK (lane locked to one archer)
+ * - Flyouts raised above table (z-50) + wrapper allows vertical overflow
+ * - Auto-assign lanes/slots action that respects: single-slot rulesets, LK lanes, and uniqueness per lane/slot/line-time
+ */
 new class extends Component
 {
     use WithFileUploads, WithPagination;
@@ -44,7 +52,12 @@ new class extends Component
     // ruleset slot mode
     public bool $slotsSingle = false;        // true => N/A slot, store NULL
 
-    // occupancy map: [line_time_id][lane][slot_or_null|'SC'] = participant_id
+    /**
+     * Occupancy map:
+     *  - Single-slot mode: [lt][lane][null] = participant_id
+     *  - Multi-slot mode:  [lt][lane][<slot>] = participant_id
+     *  - LK (lane lock)   : [lt][lane]['LK'] = participant_id (reserves entire lane)
+     */
     public array $taken = [];
 
     // CSV drawer
@@ -93,17 +106,241 @@ new class extends Component
         }
     }
 
-    /**
-     * Open the CSV upload sheet.
-     */
+    // ---- CSV flow (unchanged) ----
+
     public function openCsv(): void
     {
+        Gate::authorize('update', $this->event);
+        $typeVal = ($this->event->type->value ?? $this->event->type ?? null);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed events.');
+
+            return;
+        }
+        $firstId = count($this->lineTimeOptions) ? (int) array_key_first($this->lineTimeOptions) : null;
+        $this->applyLineTimeId = $firstId;
+        $this->csv = null;
         $this->showCsvSheet = true;
+    }
+
+    public function stageImportCsv()
+    {
+        Gate::authorize('update', $this->event);
+        $typeVal = ($this->event->type->value ?? $this->event->type ?? null);
+        if ($typeVal === 'closed') {
+            $this->dispatch('toast', type: 'warning', message: 'CSV import is disabled for closed events.');
+
+            return;
+        }
+
+        $this->validate([
+            'csv' => ['required', 'file', 'mimes:csv,txt', 'max:10240'],
+        ]);
+
+        $storedPath = $this->csv->storeAs(
+            'private/participant-imports',
+            now()->format('Ymd_His').'_'.$this->csv->getClientOriginalName()
+        );
+
+        $stream = Storage::readStream($storedPath);
+        if (! $stream) {
+            Storage::delete($storedPath);
+            $this->addError('csv', 'Unable to read uploaded file.');
+
+            return;
+        }
+
+        $headers = fgetcsv($stream) ?: [];
+        $map = $this->mapHeaders($headers);
+
+        $csvKeys = [];
+        $csvRows = [];
+        while (($row = fgetcsv($stream)) !== false) {
+            $joined = implode('', array_map(fn ($v) => trim((string) $v), $row));
+            if ($joined === '') {
+                continue;
+            }
+
+            $assoc = [];
+            foreach ($map as $i => $key) {
+                $assoc[$key] = trim((string) ($row[$i] ?? ''));
+            }
+
+            $first = (string) ($assoc['first_name'] ?? '');
+            $last = (string) ($assoc['last_name'] ?? '');
+            $email = (string) ($assoc['email'] ?? '');
+
+            if ($first === '' && $last === '' && $email === '') {
+                continue;
+            }
+
+            $key = $this->canonicalKey($first, $last, $email);
+            if (isset($csvKeys[$key])) {
+                continue;
+            }
+            $csvKeys[$key] = true;
+
+            $csvRows[] = [
+                'first_name' => $first,
+                'last_name' => $last,
+                'email' => $email,
+                'division_name' => (string) ($assoc['division_name'] ?? ''),
+                'bow_type' => (string) ($assoc['bow_type'] ?? ''),
+                'is_para' => $this->toBool((string) ($assoc['is_para'] ?? '')),
+                'uses_wheelchair' => $this->toBool((string) ($assoc['uses_wheelchair'] ?? '')),
+                'notes' => (string) ($assoc['notes'] ?? ''),
+                'key' => $key,
+            ];
+        }
+        if (is_resource($stream)) {
+            fclose($stream);
+        }
+
+        if (! count($csvRows)) {
+            Storage::delete($storedPath);
+            $this->addError('csv', 'No participant rows detected. Please check your CSV.');
+
+            return;
+        }
+
+        $emails = array_values(array_unique(array_filter(array_map(fn ($r) => $r['email'] ?: null, $csvRows))));
+        $existingEmailSet = [];
+        if ($emails) {
+            $existing = $this->event->participants()
+                ->whereIn('email', $emails)
+                ->pluck('email')->all();
+            foreach ($existing as $e) {
+                if ($e !== null && $e !== '') {
+                    $existingEmailSet[mb_strtolower(trim($e))] = true;
+                }
+            }
+        }
+        $existingNameOnlySet = [];
+        $needsNameOnly = (bool) count(array_filter($csvRows, fn ($r) => $r['email'] === ''));
+        if ($needsNameOnly) {
+            $rows = $this->event->participants()->whereNull('email')->get(['first_name', 'last_name']);
+            foreach ($rows as $p) {
+                $k = mb_strtolower(trim((string) $p->first_name)).'|'.mb_strtolower(trim((string) $p->last_name));
+                $existingNameOnlySet[$k] = true;
+            }
+        }
+
+        $billable = 0;
+        foreach ($csvRows as $r) {
+            if ($r['email'] !== '') {
+                $exists = isset($existingEmailSet[mb_strtolower(trim($r['email']))]);
+            } else {
+                $k = mb_strtolower(trim($r['first_name'])).'|'.mb_strtolower(trim($r['last_name']));
+                $exists = isset($existingNameOnlySet[$k]);
+            }
+            if (! $exists) {
+                $billable++;
+            }
+        }
+
+        if ($billable === 0) {
+            Storage::delete($storedPath);
+            $this->dispatch('toast', type: 'info', message: 'No new participants detected — nothing to charge.');
+            $this->showCsvSheet = false;
+            $this->csv = null;
+
+            return;
+        }
+
+        $company = $this->event->company ?? null;
+        $unit = \App\Services\PricingService::participantFeeCents($company, 'event');
+        $currency = \App\Services\PricingService::currency($company);
+
+        $apply = $this->applyLineTimeId;
+        $apply = (is_numeric($apply) && (int) $apply > 0) ? (int) $apply : null;
+
+        $import = \App\Models\ParticipantImport::create([
+            'event_id' => $this->event->id,
+            'user_id' => auth()->id(),
+            'file_path' => $storedPath,
+            'original_name' => $this->csv->getClientOriginalName(),
+            'row_count' => $billable,
+            'unit_price_cents' => $unit,
+            'amount_cents' => $billable * $unit,
+            'currency' => $currency,
+            'status' => 'pending_payment',
+            'meta' => ['apply_line_time_id' => $apply],
+        ]);
+
+        $this->showCsvSheet = false;
+        $this->csv = null;
+
+        return redirect()->route('corporate.events.participants.import.confirm', [
+            'event' => $this->event->id,
+            'import' => $import->id,
+        ]);
+    }
+
+    private function mapHeaders(?array $headers): array
+    {
+        if (! $headers) {
+            return [0 => 'first_name', 1 => 'last_name', 2 => 'email', 3 => 'division_name', 4 => 'bow_type', 5 => 'is_para', 6 => 'uses_wheelchair', 7 => 'notes'];
+        }
+        $aliases = [
+            'first_name' => ['first_name', 'first name', 'first', 'firstname', 'given', 'given_name', 'given name'],
+            'last_name' => ['last_name', 'last name', 'last', 'lastname', 'surname', 'family', 'family_name', 'family name'],
+            'email' => ['email', 'e-mail', 'mail'],
+            'division_name' => ['division_name', 'division', 'division name'],
+            'bow_type' => ['bow_type', 'bow type', 'bow'],
+            'is_para' => ['is_para', 'para', 'is para', 'disabled'],
+            'uses_wheelchair' => ['uses_wheelchair', 'wheelchair', 'uses wheelchair'],
+            'notes' => ['notes', 'note', 'comments', 'comment'],
+        ];
+
+        $map = [];
+        foreach ($headers as $i => $h) {
+            $k = mb_strtolower(trim((string) $h));
+            $k = str_replace(['-', ' '], '_', $k);
+            foreach ($aliases as $target => $list) {
+                if ($k === $target || in_array($k, $list, true)) {
+                    $map[$i] = $target;
+
+                    continue 2;
+                }
+            }
+        }
+
+        $needs = ['first_name', 'last_name', 'email', 'division_name', 'bow_type', 'is_para', 'uses_wheelchair', 'notes'];
+        foreach ($needs as $idx => $key) {
+            if (! in_array($key, $map, true)) {
+                $map[$idx] = $key;
+            }
+        }
+        ksort($map);
+
+        return $map;
+    }
+
+    private function canonicalKey(string $first, string $last, string $email): string
+    {
+        $e = mb_strtolower(trim($email));
+        if ($e !== '') {
+            return 'email:'.$e;
+        }
+        $f = mb_strtolower(trim($first));
+        $l = mb_strtolower(trim($last));
+
+        return 'name:'.$f.'|'.$l;
+    }
+
+    private function toBool(string $v): bool
+    {
+        $v = mb_strtolower(trim($v));
+        if ($v === '' || $v === '0' || $v === 'no' || $v === 'false' || $v === 'n') {
+            return false;
+        }
+
+        return (bool) filter_var($v, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? in_array($v, ['y', 'yes', '1', 'true'], true);
     }
 
     /**
      * Extract an array of "name" values from a ruleset relation/array property.
-     * Falls back to distinct values observed on participants for the event.
+     * Fallback to distinct values observed on participants for the event.
      *
      * @param  mixed  $ruleset
      * @param  string  $prop  'divisions' | 'bow_types'
@@ -117,7 +354,7 @@ new class extends Component
 
         $val = $ruleset->{$prop} ?? null;
 
-        // Try as relation with pluck('name')
+        // Try relation
         if (method_exists($ruleset, $prop)) {
             try {
                 $rel = $ruleset->{$prop}();
@@ -128,11 +365,11 @@ new class extends Component
                     }
                 }
             } catch (\Throwable) {
-                // swallow and fall through
+                // ignore
             }
         }
 
-        // Try as array of strings or objects/arrays with ->name/name
+        // Try raw array
         if (is_array($val) && $val) {
             if (is_string(reset($val))) {
                 return array_values(array_filter(array_map('trim', $val)));
@@ -150,7 +387,7 @@ new class extends Component
             }
         }
 
-        // Fallback from existing participants
+        // Fallback: observed
         $db = \App\Models\EventParticipant::query()->where('event_id', $this->event->id);
         $col = $prop === 'divisions' ? 'division_name' : 'bow_type';
 
@@ -175,13 +412,12 @@ new class extends Component
         if (! $ruleset) {
             return [];
         }
-
         $v = $ruleset->lane_breakdown ?? null;
         if (! $v) {
             return [];
         }
 
-        // Array input (strings or objects with label/name)
+        // Array of strings/objects
         if (is_array($v) && $v) {
             if (is_string(reset($v))) {
                 return array_values(array_filter(array_map('trim', $v)));
@@ -198,7 +434,7 @@ new class extends Component
             return $labels ? array_values(array_unique($labels)) : [];
         }
 
-        // String input: "A,B" or "A/B" or "AB" or "SINGLE/N/A"
+        // String: "A,B" | "A/B" | "AB" | "SINGLE" | "N/A"
         if (is_string($v)) {
             $raw = trim($v);
             $up = mb_strtoupper($raw);
@@ -220,9 +456,7 @@ new class extends Component
         return [];
     }
 
-    /**
-     * Return ['A', 'B', 'C', ...] up to length $n.
-     */
+    /** Return ['A','B','C', ...] up to $n. */
     private function letters(int $n): array
     {
         $out = [];
@@ -234,7 +468,9 @@ new class extends Component
     }
 
     /**
-     * Build the occupancy map $this->taken from existing assignments.
+     * Build occupancy ($this->taken) from DB.
+     * - Single-slot: lane claimed via key null
+     * - Multi-slot: lane claimed by per-slot entries; 'LK' key reserves the lane
      */
     private function buildTaken(): void
     {
@@ -253,7 +489,6 @@ new class extends Component
             $taken[$lt][$lane] ??= [];
 
             if ($this->slotsSingle) {
-                // In single-slot mode, any occupant claims the lane
                 $taken[$lt][$lane][null] ??= (int) $r->id;
 
                 continue;
@@ -263,11 +498,11 @@ new class extends Component
             if ($slotRaw === null || $slotRaw === '') {
                 continue;
             }
+
             $slot = mb_strtoupper((string) $slotRaw);
 
-            if ($slot === 'SC') {
-                // 'SC' claims full lane regardless of other slot letters
-                $taken[$lt][$lane]['SC'] ??= (int) $r->id;
+            if ($slot === 'LK') {
+                $taken[$lt][$lane]['LK'] ??= (int) $r->id; // lane lock
             } else {
                 $taken[$lt][$lane][$slot] ??= (int) $r->id;
             }
@@ -276,9 +511,7 @@ new class extends Component
         $this->taken = $taken;
     }
 
-    /**
-     * Return true if any occupant exists in lane (optionally ignoring $exceptId).
-     */
+    /** True if any occupant exists in lane (optionally ignoring $exceptId). */
     private function hasAnyOccupant(int $lineTimeId, int $lane, int $exceptId = 0): bool
     {
         if (! isset($this->taken[$lineTimeId][$lane])) {
@@ -293,19 +526,14 @@ new class extends Component
         return false;
     }
 
-    /**
-     * Lane is locked if 'SC' is present on that lane for the line time.
-     */
-    public function isLaneLockedBySC(int $lineTimeId, int $lane, int $exceptId = 0): bool
+    /** Lane is locked if 'LK' is present for that lane/line-time. */
+    public function isLaneLockedByLK(int $lineTimeId, int $lane, int $exceptId = 0): bool
     {
-        return isset($this->taken[$lineTimeId][$lane]['SC'])
-            && $this->taken[$lineTimeId][$lane]['SC'] !== $exceptId;
+        return isset($this->taken[$lineTimeId][$lane]['LK'])
+            && $this->taken[$lineTimeId][$lane]['LK'] !== $exceptId;
     }
 
-    /**
-     * In single-slot mode, any occupant makes the lane taken.
-     * In multi-slot, "taken" here is used for quick checks (e.g., SC).
-     */
+    /** In single-slot, any occupant makes lane taken; otherwise any slot or LK does. */
     public function isLaneTaken(int $lineTimeId, int $lane, int $exceptId = 0): bool
     {
         if (! isset($this->taken[$lineTimeId][$lane])) {
@@ -320,26 +548,23 @@ new class extends Component
         return false;
     }
 
-    /**
-     * True if a specific slot (or lane via SC) is already taken on that lane.
-     */
+    /** True if a specific slot (or LK) is already taken on that lane for the line time. */
     public function isSlotTaken(int $lineTimeId, int $lane, string $slot, int $exceptId = 0): bool
     {
         if ($slot === '' || ! isset($this->taken[$lineTimeId][$lane])) {
             return false;
         }
-        if ($this->isLaneLockedBySC($lineTimeId, $lane, $exceptId)) {
+        if ($this->isLaneLockedByLK($lineTimeId, $lane, $exceptId)) {
             return true;
         }
+
         $slotKey = mb_strtoupper((string) $slot);
 
         return isset($this->taken[$lineTimeId][$lane][$slotKey])
             && $this->taken[$lineTimeId][$lane][$slotKey] !== $exceptId;
     }
 
-    /**
-     * Normalize "H:i" or any parsable time to "H:i:s". Return null if invalid.
-     */
+    /** Normalize "H:i" or any parsable time to "H:i:s". */
     private function normalizeTimeSeconds(?string $t): ?string
     {
         $t = trim((string) $t);
@@ -359,9 +584,7 @@ new class extends Component
         }
     }
 
-    /**
-     * Extract a Y-m-d date string from various date inputs.
-     */
+    /** Extract a Y-m-d date string from various date inputs. */
     private function extractDateYmd($dateVal): ?string
     {
         $raw = trim((string) ($dateVal ?? ''));
@@ -378,9 +601,7 @@ new class extends Component
         }
     }
 
-    /**
-     * Format an EventLineTime as "Line m/d/Y h:iAM → h:iAM" (fallback to "Line {id}").
-     */
+    /** Format EventLineTime as "Line m/d/Y h:iA → h:iA" (fallback to "Line {id}"). */
     private function formatLineTimeIsoAware(object $lt): string
     {
         $ymd = $this->extractDateYmd($lt->line_date ?? null);
@@ -396,72 +617,56 @@ new class extends Component
 
                 return 'Line '.$startStr.($endStr ? ' → '.$endStr : '');
             } catch (\Throwable) {
-                // fall through
+                // ignore
             }
         }
 
         return 'Line '.$lt->id;
     }
 
-    /**
-     * Reset pagination when search changes.
-     */
+    /** Reset pagination when search changes. */
     public function updatingSearch(): void
     {
         $this->resetPage($this->pageName);
     }
 
-    /**
-     * Reset pagination when Division filter changes.
-     */
+    /** Reset pagination when Division filter changes. */
     public function updatedFilterDivision()
     {
         $this->resetPage($this->pageName);
     }
 
-    /**
-     * Reset pagination when Bow Type filter changes.
-     */
+    /** Reset pagination when Bow Type filter changes. */
     public function updatedFilterBowType()
     {
         $this->resetPage($this->pageName);
     }
 
-    /**
-     * Reset pagination when Line Time filter changes.
-     */
+    /** Reset pagination when Line Time filter changes. */
     public function updatedFilterLineTime()
     {
         $this->resetPage($this->pageName);
     }
 
-    /**
-     * Jump to a specific page (custom pager buttons).
-     */
+    /** Jump to a specific page (custom pager buttons). */
     public function goto(int $page): void
     {
         $this->gotoPage($page, $this->pageName);
     }
 
-    /**
-     * Previous page (mobile pager).
-     */
+    /** Previous page (mobile pager). */
     public function prevPage(): void
     {
         $this->previousPage($this->pageName);
     }
 
-    /**
-     * Next page (mobile pager).
-     */
+    /** Next page (mobile pager). */
     public function nextPage(): void
     {
         $this->nextPage($this->pageName);
     }
 
-    /**
-     * Change sort column/direction and reset pagination.
-     */
+    /** Change sort column/direction and reset pagination. */
     public function sortBy(string $col): void
     {
         if ($this->sort === $col) {
@@ -475,7 +680,7 @@ new class extends Component
 
     /**
      * Participants accessor with search, filters, and sorting applied.
-     * Paginates using $perPage and the custom page name.
+     * Paginates using $perPage and custom page name.
      */
     public function getParticipantsProperty()
     {
@@ -503,11 +708,7 @@ new class extends Component
             ->paginate($this->perPage, ['*'], $this->pageName);
     }
 
-    /**
-     * Compute a compact pager window (e.g., current ± 2).
-     *
-     * @return array{current:int,last:int,start:int,end:int}
-     */
+    /** Compute a compact pager window (e.g., current ± 2). */
     public function getPageWindowProperty(): array
     {
         $p = $this->participants;
@@ -524,11 +725,11 @@ new class extends Component
      * Save inline edits (division/bow/line/lane/slot), enforcing rules:
      * - Changing line clears lane/slot.
      * - Single-slot rulesets null slot.
-     * - SC claims entire lane; conflicts are prevented.
+     * - LK claims entire lane; conflicts are prevented.
      * - Emits toasts on success/conflict.
      *
      * @param  int  $id  participant id
-     * @param  'division_name'|'bow_type'|'line_time_id'|'assigned_lane'|'assigned_slot'  $field
+     * @param  string  $field  'division_name'|'bow_type'|'line_time_id'|'assigned_lane'|'assigned_slot'
      * @param  mixed  $value
      */
     public function save(int $id, string $field, $value): void
@@ -553,18 +754,21 @@ new class extends Component
         if ($field === 'bow_type' && $this->bowTypeOptions && $val !== null && ! in_array($val, $this->bowTypeOptions, true)) {
             return;
         }
+
         if ($field === 'line_time_id') {
             $val = $val !== null ? (int) $val : null;
             if ($val !== null && ! array_key_exists($val, $this->lineTimeOptions)) {
                 return;
             }
         }
+
         if ($field === 'assigned_lane') {
             $val = $val !== null ? (int) $val : null;
             if ($val !== null && $this->laneOptions && ! in_array($val, $this->laneOptions, true)) {
                 return;
             }
         }
+
         if ($field === 'assigned_slot') {
             if ($this->slotsSingle) {
                 $this->dispatch('toast', type: 'info', message: 'Slots are N/A for this ruleset.');
@@ -623,11 +827,11 @@ new class extends Component
             } else {
                 if ($newSlot) {
                     $slotU = mb_strtoupper((string) $newSlot);
-                    if ($slotU === 'SC') {
-                        $conflict = $qBase->first();
+                    if ($slotU === 'LK') {
+                        $conflict = $qBase->first();              // any occupant blocks LK
                     } else {
-                        $hasSC = (clone $qBase)->where('assigned_slot', 'SC')->exists();
-                        $conflict = $hasSC ? true : (clone $qBase)->where('assigned_slot', $slotU)->first();
+                        $hasLK = (clone $qBase)->where('assigned_slot', 'LK')->exists();
+                        $conflict = $hasLK ? true : (clone $qBase)->where('assigned_slot', $slotU)->first();
                     }
                 }
             }
@@ -650,9 +854,7 @@ new class extends Component
         $this->dispatch('toast', type: 'success', message: 'Saved.');
     }
 
-    /**
-     * Clear lane/slot assignment for a participant.
-     */
+    /** Clear lane/slot assignment for a participant. */
     public function clearParticipantAssignment(int $participantId): void
     {
         Gate::authorize('update', $this->event);
@@ -670,9 +872,7 @@ new class extends Component
         $this->dispatch('toast', type: 'success', message: 'Participant lane/slot cleared.');
     }
 
-    /**
-     * Clear ALL lane/slot assignments for the event.
-     */
+    /** Clear ALL lane/slot assignments for the event. */
     public function resetAssignments(): void
     {
         Gate::authorize('update', $this->event);
@@ -683,8 +883,107 @@ new class extends Component
     }
 
     /**
+     * Auto-assign lanes/slots for participants, respecting:
+     * - Single-slot mode: lane only (slot null)
+     * - Multi-slot mode: cycle through available slots (excluding LK)
+     * - LK lanes are reserved for existing occupant only
+     * Scope: if filterLineTime is set, only that line-time; else all.
+     * Does NOT overwrite existing valid assignments; fills only missing fields.
+     */
+    public function autoAssign(): void
+    {
+        Gate::authorize('update', $this->event);
+
+        $pBase = $this->event->participants()
+            ->when($this->filterLineTime, fn ($q, $lt) => $q->where('line_time_id', (int) $lt));
+
+        $candidates = (clone $pBase)
+            ->whereNotNull('line_time_id')
+            ->where(function ($q) {
+                $q->whereNull('assigned_lane')
+                    ->orWhere(function ($qq) {
+                        if (! $this->slotsSingle) {
+                            $qq->whereNull('assigned_slot');
+                        }
+                    });
+            })
+            ->orderBy('line_time_id')
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get(['id', 'line_time_id', 'assigned_lane', 'assigned_slot']);
+
+        if ($candidates->isEmpty()) {
+            $this->dispatch('toast', type: 'info', message: 'No participants need assignment.');
+
+            return;
+        }
+
+        // Refresh occupancy
+        $this->buildTaken();
+
+        // Slot cycle (exclude LK)
+        $slotCycle = $this->slotsSingle
+            ? [null]
+            : array_values(array_filter($this->slotOptions, fn ($s) => mb_strtoupper($s) !== 'LK'));
+
+        // Ensure lanes exist
+        $lanes = $this->laneOptions ?: range(1, (int) (config('archerdb.default_lane_count', 12)));
+
+        foreach ($candidates as $p) {
+            $lt = (int) $p->line_time_id;
+            $this->taken[$lt] ??= [];
+
+            $assigned = false;
+
+            foreach ($lanes as $lane) {
+                $lane = (int) $lane;
+                $this->taken[$lt][$lane] ??= [];
+
+                // Skip if lane is LK-locked by another participant
+                if (! $this->slotsSingle && isset($this->taken[$lt][$lane]['LK'])) {
+                    continue;
+                }
+
+                if ($this->slotsSingle) {
+                    if (! $this->hasAnyOccupant($lt, $lane)) {
+                        \App\Models\EventParticipant::whereKey($p->id)->update([
+                            'assigned_lane' => $lane,
+                            'assigned_slot' => null,
+                        ]);
+                        $this->taken[$lt][$lane][null] = (int) $p->id;
+                        $assigned = true;
+                        break;
+                    }
+                } else {
+                    foreach ($slotCycle as $slot) {
+                        $slotKey = $slot ? mb_strtoupper((string) $slot) : null;
+                        if ($slotKey === 'LK') {
+                            continue;
+                        } // defensive
+
+                        $slotFree = ! isset($this->taken[$lt][$lane][$slotKey]);
+                        if ($slotFree) {
+                            \App\Models\EventParticipant::whereKey($p->id)->update([
+                                'assigned_lane' => $lane,
+                                'assigned_slot' => $slotKey,
+                            ]);
+                            $this->taken[$lt][$lane][$slotKey] = (int) $p->id;
+                            $assigned = true;
+                            break 2;
+                        }
+                    }
+                }
+            }
+            // If not assigned, leave unassigned; proceed to next
+        }
+
+        $this->buildTaken();
+        $this->dispatch('toast', type: 'success', message: 'Auto-assignment completed.');
+    }
+
+    /**
      * Rebuild picklists for divisions, bow types, lanes and slot options.
-     * Detects single-slot mode (N/A) and appends 'SC' when multi-slot.
+     * Detects single-slot mode (N/A) and appends 'LK' for multi-slot lane-lock.
      */
     private function rebuildPicklists(): void
     {
@@ -728,9 +1027,9 @@ new class extends Component
             $this->slotOptions = ['A', 'B'];
         }
 
-        // Add SC for multi-slot layouts
-        if (! $this->slotsSingle && count($this->slotOptions) >= 2 && ! in_array('SC', $this->slotOptions, true)) {
-            $this->slotOptions[] = 'SC';
+        // Add LK for multi-slot layouts
+        if (! $this->slotsSingle && count($this->slotOptions) >= 2 && ! in_array('LK', $this->slotOptions, true)) {
+            $this->slotOptions[] = 'LK';
         }
 
         \Log::debug('Participants: rebuilt picklists', [
@@ -746,9 +1045,7 @@ new class extends Component
         ]);
     }
 
-    /**
-     * Dump a compact snapshot of current state to logs for debugging.
-     */
+    /** Dump a compact snapshot of current state to logs for debugging. */
     private function logDebugState(string $tag = 'snapshot'): void
     {
         \Log::debug("Participants: {$tag}", [
@@ -806,6 +1103,13 @@ new class extends Component
                                 icon="users"
                             >
                                 Export participants
+                            </flux:menu.item>
+
+                            <flux:menu.item
+                                icon="sparkles"
+                                x-on:click.prevent="$wire.autoAssign()"
+                            >
+                                Auto-assign lanes & slots
                             </flux:menu.item>
 
                             <flux:menu.item
@@ -869,8 +1173,8 @@ new class extends Component
             </div>
         </div>
 
-        {{-- Table --}}
-        <div class="mt-4 overflow-x-auto rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
+        {{-- Table (wrapper allows vertical flyout) --}}
+        <div class="mt-4 overflow-x-auto overflow-y-visible rounded-xl border border-gray-200 shadow-sm dark:border-zinc-700">
             <table class="min-w-full text-left">
                 <thead class="bg-white text-xs uppercase tracking-wide dark:bg-gray-900">
                     <tr>
@@ -950,7 +1254,7 @@ new class extends Component
                                     $laneBad = false; $laneGood = false;
                                     if ($ltId && $laneSel) {
                                         if ($slotsSingle) { $laneBad = $this->isLaneTaken($ltId, $laneSel, (int) $p->id); }
-                                        else { $laneBad = $this->isLaneLockedBySC($ltId, $laneSel, (int) $p->id); }
+                                        else { $laneBad = $this->isLaneLockedByLK($ltId, $laneSel, (int) $p->id); }
                                         $laneGood = ! $laneBad;
                                     }
 
@@ -974,7 +1278,7 @@ new class extends Component
                                         x-cloak
                                         x-transition
                                         x-on:click.outside="open = false"
-                                        class="absolute left-0 top-full z-40 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-md dark:border-white/10 dark:bg-zinc-900"
+                                        class="absolute left-0 top-full z-50 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-md dark:border-white/10 dark:bg-zinc-900"
                                     >
                                         <ul class="max-h-60 overflow-auto py-1">
                                             <li>
@@ -991,7 +1295,7 @@ new class extends Component
                                                 @php
                                                     $disabled = ($slotsSingle && $ltId)
                                                         ? $this->isLaneTaken($ltId, (int) $lane, (int) $p->id)
-                                                        : ($ltId ? $this->isLaneLockedBySC($ltId, (int) $lane, (int) $p->id) : false);
+                                                        : ($ltId ? $this->isLaneLockedByLK($ltId, (int) $lane, (int) $p->id) : false);
                                                 @endphp
                                                 <li>
                                                     <button
@@ -1009,7 +1313,7 @@ new class extends Component
                                 </div>
                             </td>
 
-                            {{-- Slot (full-width bg + ring + SC) --}}
+                            {{-- Slot (full-width bg + ring + LK) --}}
                             <td class="px-3 py-2">
                                 @php
                                     $ltId = (int) ($p->line_time_id ?? 0);
@@ -1025,7 +1329,7 @@ new class extends Component
                                         $slotSel = $p->assigned_slot ? mb_strtoupper($p->assigned_slot) : null;
                                         $slotBad = false; $slotGood = false;
                                         if ($ltId && $lane && $slotSel) {
-                                            $slotBad = $this->isLaneLockedBySC($ltId, $lane, (int) $p->id)
+                                            $slotBad = $this->isLaneLockedByLK($ltId, $lane, (int) $p->id)
                                                     || $this->isSlotTaken($ltId, $lane, $slotSel, (int) $p->id);
                                             $slotGood = ! $slotBad;
                                         }
@@ -1050,7 +1354,7 @@ new class extends Component
                                             x-cloak
                                             x-transition
                                             x-on:click.outside="open = false"
-                                            class="absolute left-0 top-full z-40 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-md dark:border-white/10 dark:bg-zinc-900"
+                                            class="absolute left-0 top-full z-50 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-md dark:border-white/10 dark:bg-zinc-900"
                                         >
                                             <ul class="max-h-60 overflow-auto py-1">
                                                 <li>
@@ -1063,12 +1367,12 @@ new class extends Component
                                                     </button>
                                                 </li>
 
-                                                {{-- normal slots --}}
+                                                {{-- normal slots (exclude LK) --}}
                                                 @foreach($slotOptions as $slot)
-                                                    @continue($slot === 'SC')
+                                                    @continue(mb_strtoupper($slot) === 'LK')
                                                     @php
                                                         $disabled = ($ltId && $lane)
-                                                            ? ($this->isLaneLockedBySC($ltId, $lane, (int) $p->id)
+                                                            ? ($this->isLaneLockedByLK($ltId, $lane, (int) $p->id)
                                                                 || $this->isSlotTaken($ltId, $lane, (string) $slot, (int) $p->id))
                                                             : true;
                                                     @endphp
@@ -1084,21 +1388,21 @@ new class extends Component
                                                     </li>
                                                 @endforeach
 
-                                                {{-- SC (use whole lane) --}}
+                                                {{-- LK (lock whole lane) --}}
                                                 @if(!$slotsSingle && count($slotOptions) >= 2)
                                                     @php
-                                                        $disabledSC = ($ltId && $lane)
+                                                        $disabledLK = ($ltId && $lane)
                                                             ? $this->hasAnyOccupant($ltId, $lane, (int) $p->id)
                                                             : true;
                                                     @endphp
                                                     <li>
                                                         <button
                                                             type="button"
-                                                            :disabled="{{ $disabledSC ? 'true' : 'false' }}"
-                                                            class="w-full px-2 py-1 text-left hover:bg-gray-50 dark:hover:bg-white/10 {{ $disabledSC ? 'line-through opacity-60 cursor-not-allowed' : '' }}"
-                                                            @click="$el.disabled || ($wire.save({{ $p->id }}, 'assigned_slot', 'SC'), open=false)"
+                                                            :disabled="{{ $disabledLK ? 'true' : 'false' }}"
+                                                            class="w-full px-2 py-1 text-left hover:bg-gray-50 dark:hover:bg-white/10 {{ $disabledLK ? 'line-through opacity-60 cursor-not-allowed' : '' }}"
+                                                            @click="$el.disabled || ($wire.save({{ $p->id }}, 'assigned_slot', 'LK'), open=false)"
                                                         >
-                                                            SC
+                                                            LK
                                                         </button>
                                                     </li>
                                                 @endif

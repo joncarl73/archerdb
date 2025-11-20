@@ -4,12 +4,12 @@
     <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
       {{-- Title --}}
       <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-        Check in — {{ $event->title }}
+        Check in — {{ $event->title ?? $event->name ?? 'Event' }}
       </h1>
 
       {{-- Scoring mode badge (read-only) --}}
       @php
-        $mode = $event->scoring_mode; // e.g. 'personal' | 'personal_device' | 'kiosk'
+        $mode = $event->scoring_mode; // 'personal' | 'personal_device' | 'kiosk'
         $modeLabel = in_array($mode, ['personal', 'personal_device'], true) ? 'Personal device' : 'Kiosk';
       @endphp
       <div class="mt-2">
@@ -31,7 +31,7 @@
                     dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
           No participants are available for this event. Please contact the organizer to be added.
           <div class="mt-4">
-            <flux:button variant="ghost" onclick="window.location='{{ route('public.event.landing', $event->public_uuid) }}'">
+            <flux:button variant="ghost" onclick="window.location='{{ route('public.event.landing', ['uuid' => $event->public_uuid]) }}'">
               Back
             </flux:button>
           </div>
@@ -39,57 +39,63 @@
       @else
         <div class="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
           <form
-            x-data="{ selected: '' }"
+            x-data="{ selectedId: '' }"
             method="POST"
-            action="{{ route('public.event.checkin.participants.submit', $event->public_uuid) }}"
+            action="{{ route('public.event.checkin.participants.submit', ['uuid' => $event->public_uuid]) }}"
             class="p-6"
           >
             @csrf
 
-            {{-- Flux select --}}
-            <div class="max-w-xl">
-              <flux:label for="participant_id" class="text-zinc-900 dark:text-zinc-200">
-                Participant
-              </flux:label>
+{{-- Flux select --}}
+<div class="max-w-xl">
+  <flux:label for="participant_id" class="text-zinc-900 dark:text-zinc-200">
+    Participant
+  </flux:label>
 
-              <flux:select id="participant_id" name="participant_id" class="w-full" required x-model="selected" autofocus
-                           aria-describedby="participants-help">
-                <option value="" disabled selected>Select a participant…</option>
-                @foreach ($participants as $p)
-                  @php
-                    $hasNames = !empty($p->last_name ?? null) || !empty($p->first_name ?? null);
-                    $name = $hasNames
-                      ? trim(implode(', ', array_filter([$p->last_name ?? null, $p->first_name ?? null])))
-                      : ($p->display_name ?? '');
-                    $label = trim($name . (($p->email ?? '') ? " — {$p->email}" : ''));
-                  @endphp
-                  <option value="{{ $p->id }}">{{ $label }}</option>
-                @endforeach
-              </flux:select>
+  <flux:select id="participant_id" name="participant_id" class="w-full" required
+               x-model="selectedId" autofocus aria-describedby="participants-help">
+    {{-- NOTE: avoid bare "selected" to prevent Blade constant parse --}}
+    <option value="" disabled x-bind:selected="!selectedId">Select a participant…</option>
 
-              @error('participant_id')
-                <p class="mt-2 text-sm text-red-600 dark:text-red-500">{{ $message }}</p>
-              @enderror
+    @foreach ($participants as $p)
+      @php
+        $hasNames = !empty($p->last_name) || !empty($p->first_name);
+        $name = $hasNames
+          ? trim(implode(', ', array_filter([$p->last_name, $p->first_name])))
+          : ($p->display_name ?? '');
+        $label = trim($name . (!empty($p->email) ? " — {$p->email}" : ''));
+      @endphp
+      <option value="{{ (int) $p->id }}">{{ $label !== '' ? $label : 'Unknown' }}</option>
+    @endforeach
+  </flux:select>
 
-              <p id="participants-help" class="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                {{ $participants->count() }} participant{{ $participants->count() === 1 ? '' : 's' }}
-              </p>
-            </div>
+  @error('participant_id')
+    <p class="mt-2 text-sm text-red-600 dark:text-red-500">{{ $message }}</p>
+  @enderror
 
-            {{-- Footer --}}
-            <div class="mt-6 flex items-center justify-end gap-3">
-              <flux:button type="button" variant="ghost" onclick="window.location='{{ route('public.event.landing', $event->public_uuid) }}'">
-                Cancel
-              </flux:button>
-              <flux:button
-                type="submit"
-                variant="primary"
-                :disabled="!selected"
-                :class="!selected ? 'opacity-60 cursor-not-allowed' : ''"
-              >
-                Continue
-              </flux:button>
-            </div>
+  <p id="participants-help" class="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+    {{ $participants->count() }} participant{{ $participants->count() === 1 ? '' : 's' }}
+  </p>
+</div>
+
+{{-- Footer --}}
+<div class="mt-6 flex items-center justify-end gap-3">
+  <flux:button type="button" variant="ghost"
+    onclick="window.location='{{ route('public.event.landing', ['uuid' => $event->public_uuid]) }}'">
+    Cancel
+  </flux:button>
+
+  {{-- Use x-bind:* instead of ":" to avoid Blade trying to interpret identifiers --}}
+  <flux:button
+    type="submit"
+    variant="primary"
+    x-bind:disabled="!selectedId"
+    x-bind:class="!selectedId ? 'opacity-60 cursor-not-allowed' : ''"
+  >
+    Continue
+  </flux:button>
+</div>
+
           </form>
         </div>
       @endif

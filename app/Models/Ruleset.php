@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Ruleset extends Model
 {
     protected $fillable = [
-        'company_id', 'org', 'name', 'description', 'schema', 'scoring_values', 'x_value', 'distances_m', 'ends_per_session', 'arrows_per_end', 'lane_breakdown', 'lanes_count',
+        'company_id', 'org', 'name', 'description', 'schema', 'scoring_values', 'x_value', 'distances_m', 'ends_per_session', 'arrows_per_end', 'lane_breakdown', 'lane_count',
     ];
 
     protected $casts = [
@@ -18,7 +18,7 @@ class Ruleset extends Model
         'distances_m' => 'array',
         'ends_per_session' => 'integer',
         'arrows_per_end' => 'integer',
-        'lanes_count' => 'integer',
+        'lane_count' => 'integer',
     ];
 
     public function company(): BelongsTo

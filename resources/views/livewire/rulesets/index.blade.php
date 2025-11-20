@@ -120,6 +120,7 @@ new class extends Component
 
     private function loadLookups(): void
     {
+        // Preload lightweight display fields only
         $this->L_disciplines = Discipline::orderBy('label')->get(['id', 'key', 'label']);
         $this->L_bowTypes = BowType::orderBy('label')->get(['id', 'key', 'label']);
         $this->L_targetFaces = TargetFace::orderBy('label')->get(['id', 'key', 'label', 'kind', 'diameter_cm', 'zones']);
@@ -165,8 +166,7 @@ new class extends Component
             return [];
         }
         $vals = array_filter(array_map('trim', explode(',', $csv)), fn ($v) => $v !== '');
-        $ints = array_map('intval', $vals);
-        $ints = array_values(array_unique($ints));
+        $ints = array_values(array_unique(array_map('intval', $vals)));
         sort($ints, SORT_NUMERIC);
 
         return $ints;
@@ -221,6 +221,7 @@ new class extends Component
         Gate::authorize('create', Ruleset::class);
         $this->resetErrorBag();
 
+        // Reset all create-state fields
         $this->c_org = null;
         $this->c_name = '';
         $this->c_description = null;
@@ -301,7 +302,7 @@ new class extends Component
             'lane_count' => $this->c_lanes_count,
         ]);
 
-        // sync lookups
+        // sync lookups (unchanged)
         $r->disciplines()->sync($this->c_selected_disciplines);
         $r->bowTypes()->sync($this->c_selected_bow_types);
         $r->targetFaces()->sync($this->c_selected_target_faces);
@@ -332,6 +333,7 @@ new class extends Component
         $this->e_name = $r->name;
         $this->e_description = $r->description;
 
+        // hydrate selections
         $this->e_schema = $r->schema ?? [];
         $this->e_selected_disciplines = $r->disciplines()->pluck('id')->toArray();
         $this->e_selected_bow_types = $r->bowTypes()->pluck('id')->toArray();
@@ -415,7 +417,7 @@ new class extends Component
             'lane_count' => $this->e_lanes_count,
         ]);
 
-        // sync lookups
+        // sync lookups (unchanged)
         $r->disciplines()->sync($this->e_selected_disciplines);
         $r->bowTypes()->sync($this->e_selected_bow_types);
         $r->targetFaces()->sync($this->e_selected_target_faces);
@@ -450,9 +452,7 @@ new class extends Component
       </p>
     </div>
     <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-      <flux:button variant="primary" color="indigo" icon="plus" wire:click="openCreate">
-        New ruleset
-      </flux:button>
+      <flux:button variant="primary" color="indigo" icon="plus" wire:click="openCreate">New ruleset</flux:button>
     </div>
   </div>
 
@@ -540,8 +540,7 @@ new class extends Component
             <td class="py-3.5 pl-3 pr-4 text-right text-sm">
               <div class="inline-flex items-center gap-2">
                 <flux:button size="sm" appearance="secondary" icon="pencil-square" wire:click="openEdit({{ $r->id }})">Edit</flux:button>
-                <flux:button size="sm" appearance="danger" icon="trash" wire:click="delete({{ $r->id }})"
-                             onclick="return confirm('Delete this ruleset?');">Delete</flux:button>
+                <flux:button size="sm" appearance="danger" icon="trash" wire:click="delete({{ $r->id }})" onclick="return confirm('Delete this ruleset?');">Delete</flux:button>
               </div>
             </td>
           </tr>
@@ -565,7 +564,7 @@ new class extends Component
       </div>
 
       <div class="flex-1 overflow-auto p-5 space-y-6">
-        {{-- Meta (slug removed) --}}
+        {{-- Meta --}}
         <div class="grid gap-4 md:grid-cols-3">
           <div>
             <flux:label>Org (optional)</flux:label>
@@ -633,64 +632,101 @@ new class extends Component
           </div>
         </div>
 
-        {{-- Lookups as checkboxes (unchanged) --}}
-        <div class="grid gap-6 md:grid-cols-2">
-          <div>
-            <flux:label>Disciplines</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_disciplines as $d)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="c_selected_disciplines" value="{{ $d->id }}" />
-                  <span>{{ $d->label }}</span>
-                </label>
-              @endforeach
-            </div>
+        {{-- LOOKUPS — now in tabs (CREATE) --}}
+        {{-- Accessible, simple Alpine tabs. No Livewire state changed, only layout. --}}
+        <div x-data="{ tab: 'disciplines' }" class="mt-2">
+          {{-- Tab list --}}
+          <div role="tablist" aria-label="Ruleset lookups" class="flex flex-wrap gap-2 border-b border-gray-200 dark:border-zinc-800 pb-2">
+            @php
+              $tabs = [
+                'disciplines' => 'Disciplines',
+                'bowtypes'    => 'Bow types',
+                'faces'       => 'Target faces',
+                'divisions'   => 'Divisions',
+                'classes'     => 'Classes',
+            ]; @endphp
+
+            @foreach($tabs as $value => $label)
+              <button
+                type="button"
+                :aria-selected="tab==='{{ $value }}'"
+                :class="tab==='{{ $value }}' ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200'"
+                @click="tab='{{ $value }}'"
+                class="px-3 py-1.5 rounded-lg text-sm font-medium transition"
+                role="tab"
+              >{{ $label }}</button>
+            @endforeach
           </div>
-          <div>
-            <flux:label>Bow types</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_bowTypes as $b)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="c_selected_bow_types" value="{{ $b->id }}" />
-                  <span>{{ $b->label }}</span>
-                </label>
-              @endforeach
+
+          {{-- Panels --}}
+          <div class="mt-4">
+            {{-- Disciplines --}}
+            <div x-show="tab==='disciplines'" x-cloak role="tabpanel">
+              <flux:label>Disciplines</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_disciplines as $d)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="c_selected_disciplines" value="{{ $d->id }}" />
+                    <span>{{ $d->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div>
-            <flux:label>Target faces</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_targetFaces as $f)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="c_selected_target_faces" value="{{ $f->id }}" />
-                  <span>{{ $f->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Bow types --}}
+            <div x-show="tab==='bowtypes'" x-cloak role="tabpanel">
+              <flux:label>Bow types</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_bowTypes as $b)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="c_selected_bow_types" value="{{ $b->id }}" />
+                    <span>{{ $b->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div>
-            <flux:label>Divisions</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_divisions as $v)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="c_selected_divisions" value="{{ $v->id }}" />
-                  <span>{{ $v->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Target faces --}}
+            <div x-show="tab==='faces'" x-cloak role="tabpanel">
+              <flux:label>Target faces</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_targetFaces as $f)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="c_selected_target_faces" value="{{ $f->id }}" />
+                    <span>{{ $f->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div class="md:col-span-2">
-            <flux:label>Classes</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              @foreach($L_classes as $c)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="c_selected_classes" value="{{ $c->id }}" />
-                  <span>{{ $c->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Divisions --}}
+            <div x-show="tab==='divisions'" x-cloak role="tabpanel">
+              <flux:label>Divisions</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_divisions as $v)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="c_selected_divisions" value="{{ $v->id }}" />
+                    <span>{{ $v->label }}</span>
+                  </label>
+                @endforeach
+              </div>
+            </div>
+
+            {{-- Classes --}}
+            <div x-show="tab==='classes'" x-cloak role="tabpanel">
+              <flux:label>Classes</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_classes as $c)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="c_selected_classes" value="{{ $c->id }}" />
+                    <span>{{ $c->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
           </div>
         </div>
+        {{-- /LOOKUPS (CREATE) --}}
       </div>
 
       <div class="border-t border-gray-200 dark:border-zinc-800 px-5 py-4 flex items-center gap-2">
@@ -712,7 +748,7 @@ new class extends Component
       </div>
 
       <div class="flex-1 overflow-auto p-5 space-y-6">
-        {{-- Meta (slug removed) --}}
+        {{-- Meta --}}
         <div class="grid gap-4 md:grid-cols-3">
           <div>
             <flux:label>Org (optional)</flux:label>
@@ -780,64 +816,100 @@ new class extends Component
           </div>
         </div>
 
-        {{-- Lookups as checkboxes --}}
-        <div class="grid gap-6 md:grid-cols-2">
-          <div>
-            <flux:label>Disciplines</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_disciplines as $d)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="e_selected_disciplines" value="{{ $d->id }}" />
-                  <span>{{ $d->label }}</span>
-                </label>
-              @endforeach
-            </div>
+        {{-- LOOKUPS — now in tabs (EDIT) --}}
+        <div x-data="{ tab: 'disciplines' }" class="mt-2">
+          {{-- Tab list --}}
+          <div role="tablist" aria-label="Ruleset lookups" class="flex flex-wrap gap-2 border-b border-gray-200 dark:border-zinc-800 pb-2">
+            @php
+              $tabs = [
+                'disciplines' => 'Disciplines',
+                'bowtypes'    => 'Bow types',
+                'faces'       => 'Target faces',
+                'divisions'   => 'Divisions',
+                'classes'     => 'Classes',
+            ]; @endphp
+
+            @foreach($tabs as $value => $label)
+              <button
+                type="button"
+                :aria-selected="tab==='{{ $value }}'"
+                :class="tab==='{{ $value }}' ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200'"
+                @click="tab='{{ $value }}'"
+                class="px-3 py-1.5 rounded-lg text-sm font-medium transition"
+                role="tab"
+              >{{ $label }}</button>
+            @endforeach
           </div>
-          <div>
-            <flux:label>Bow types</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_bowTypes as $b)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="e_selected_bow_types" value="{{ $b->id }}" />
-                  <span>{{ $b->label }}</span>
-                </label>
-              @endforeach
+
+          {{-- Panels --}}
+          <div class="mt-4">
+            {{-- Disciplines --}}
+            <div x-show="tab==='disciplines'" x-cloak role="tabpanel">
+              <flux:label>Disciplines</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_disciplines as $d)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="e_selected_disciplines" value="{{ $d->id }}" />
+                    <span>{{ $d->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div>
-            <flux:label>Target faces</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_targetFaces as $f)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="e_selected_target_faces" value="{{ $f->id }}" />
-                  <span>{{ $f->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Bow types --}}
+            <div x-show="tab==='bowtypes'" x-cloak role="tabpanel">
+              <flux:label>Bow types</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_bowTypes as $b)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="e_selected_bow_types" value="{{ $b->id }}" />
+                    <span>{{ $b->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div>
-            <flux:label>Divisions</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2">
-              @foreach($L_divisions as $v)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="e_selected_divisions" value="{{ $v->id }}" />
-                  <span>{{ $v->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Target faces --}}
+            <div x-show="tab==='faces'" x-cloak role="tabpanel">
+              <flux:label>Target faces</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_targetFaces as $f)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="e_selected_target_faces" value="{{ $f->id }}" />
+                    <span>{{ $f->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
-          </div>
-          <div class="md:col-span-2">
-            <flux:label>Classes</flux:label>
-            <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              @foreach($L_classes as $c)
-                <label class="inline-flex items-center gap-2">
-                  <flux:checkbox wire:model="e_selected_classes" value="{{ $c->id }}" />
-                  <span>{{ $c->label }}</span>
-                </label>
-              @endforeach
+
+            {{-- Divisions --}}
+            <div x-show="tab==='divisions'" x-cloak role="tabpanel">
+              <flux:label>Divisions</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_divisions as $v)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="e_selected_divisions" value="{{ $v->id }}" />
+                    <span>{{ $v->label }}</span>
+                  </label>
+                @endforeach
+              </div>
+            </div>
+
+            {{-- Classes --}}
+            <div x-show="tab==='classes'" x-cloak role="tabpanel">
+              <flux:label>Classes</flux:label>
+              <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                @foreach($L_classes as $c)
+                  <label class="inline-flex items-center gap-2">
+                    <flux:checkbox wire:model="e_selected_classes" value="{{ $c->id }}" />
+                    <span>{{ $c->label }}</span>
+                  </label>
+                @endforeach
+              </div>
             </div>
           </div>
         </div>
+        {{-- /LOOKUPS (EDIT) --}}
       </div>
 
       <div class="border-t border-gray-200 dark:border-zinc-800 px-5 py-4 flex items-center gap-2">

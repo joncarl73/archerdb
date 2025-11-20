@@ -15,30 +15,31 @@ class PublicEventCheckinController extends Controller
     }
 
     /**
-     * GET e/{uuid}/checkin  → pick participant (no lanes for events)
+     * GET e/{uuid}/checkin → pick participant (events: no lane picking)
      */
     public function participants(Request $request, string $uuid)
     {
         $event = $this->findEventOr404($uuid);
 
-        // Expect an Event::participants() -> hasMany(EventParticipant::class)
-        // Table has first_name/last_name/email (no "name" column).
+        // IMPORTANT: return Eloquent models (no mapping to arrays)
         $participants = $event->participants()
             ->select(['id', 'first_name', 'last_name', 'email'])
             ->orderBy('last_name')
             ->orderBy('first_name')
-            ->get()
-            ->map(fn ($p) => [
-                'id' => (int) $p->id,
-                'name' => trim(($p->first_name ?? '').' '.($p->last_name ?? '')) ?: 'Unknown',
-                'email' => (string) ($p->email ?? ''),
-            ]);
+            ->get();
 
-        return view('public.events.participants', compact('event', 'participants'));
+        return view('public.events.participants', [
+            'event' => $event,
+            'participants' => $participants,
+        ]);
     }
 
     /**
-     * POST e/{uuid}/checkin → submit participant + mode (personal|kiosk)
+     * POST e/{uuid}/checkin → submit participant (mode auto-picked from event)
+     *
+     * We no longer require a 'mode' field. We infer it from $event->scoring_mode:
+     *   - 'kiosk'   → public.events.scoring.kiosk-wait
+     *   - otherwise → public.events.scoring.personal-start
      */
     public function submitParticipants(Request $request, string $uuid)
     {
@@ -46,11 +47,10 @@ class PublicEventCheckinController extends Controller
 
         $data = $request->validate([
             'participant_id' => ['required', 'integer'],
-            'mode' => ['required', 'in:personal,kiosk'],
         ]);
 
         $participant = $event->participants()
-            ->select(['id']) // minimal select
+            ->select(['id'])
             ->whereKey($data['participant_id'])
             ->first();
 
@@ -60,10 +60,12 @@ class PublicEventCheckinController extends Controller
             ]);
         }
 
-        // Skip lane selection entirely for events.
+        // Decide scoring mode from event setting (fallback to 'personal')
+        // Expecting something like: 'kiosk' | 'personal' | null
+        $mode = (string) ($event->scoring_mode ?? 'personal');
+        $mode = strtolower($mode) === 'kiosk' ? 'kiosk' : 'personal';
 
-        if ($data['mode'] === 'kiosk') {
-            // Prefer explicit event-scoped kiosk wait route
+        if ($mode === 'kiosk') {
             if (RouteFacade::has('public.events.scoring.kiosk-wait')) {
                 return redirect()->route('public.events.scoring.kiosk-wait', [
                     'uuid' => $event->public_uuid,
@@ -71,13 +73,12 @@ class PublicEventCheckinController extends Controller
                 ]);
             }
 
-            // Fallback: if you keep a generic kiosk route, adjust name/params here.
             return back()->withErrors([
                 'mode' => 'Kiosk scoring route is not defined. Add route name public.events.scoring.kiosk-wait.',
             ]);
         }
 
-        // Personal-device start (no lane picking)
+        // Personal device
         if (RouteFacade::has('public.events.scoring.personal-start')) {
             return redirect()->route('public.events.scoring.personal-start', [
                 'uuid' => $event->public_uuid,
@@ -85,8 +86,6 @@ class PublicEventCheckinController extends Controller
             ]);
         }
 
-        // Fallback: if you already have a start route that expects a checkin id,
-        // you’ll need to adapt the flow to create a checkin first. For now, error.
         return back()->withErrors([
             'mode' => 'Personal scoring route is not defined. Add route name public.events.scoring.personal-start.',
         ]);
@@ -101,13 +100,11 @@ class PublicEventCheckinController extends Controller
         $event = $this->findEventOr404($uuid);
         $participantId = (int) $request->query('pid');
 
-        // Ensure the pid belongs to this event
         $participant = $event->participants()
             ->select(['id', 'first_name', 'last_name', 'email'])
             ->findOrFail($participantId);
 
-        // If your scoring UI needs a score/checkin row, create/mint it here.
-
+        // If needed, create a checkin/score session here.
         return view('public.events.scoring.personal-start', [
             'event' => $event,
             'participant' => $participant,
