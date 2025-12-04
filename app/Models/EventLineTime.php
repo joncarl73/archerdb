@@ -48,4 +48,9 @@ class EventLineTime extends Model
     {
         return $this->hasMany(\App\Models\EventCheckin::class, 'event_line_time_id');
     }
+
+    public function scores()
+    {
+        return $this->hasMany(EventScore::class, 'event_line_time_id');
+    }
 }

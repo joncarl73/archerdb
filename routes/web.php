@@ -9,6 +9,7 @@ use App\Http\Controllers\ParticipantImportReturnController;
 use App\Http\Controllers\ProLandingController;
 use App\Http\Controllers\ProReturnController;
 use App\Http\Controllers\PublicCheckinController;
+use App\Http\Controllers\PublicClsController;
 use App\Http\Controllers\PublicLeagueController;
 use App\Http\Controllers\PublicLeagueInfoController;
 use App\Http\Controllers\PublicScoringController;
@@ -421,5 +422,42 @@ Route::middleware(['auth', 'corporate'])->group(function () {
     Route::get('/payments/onboard/refresh', [StripeReturnController::class, 'refresh'])
         ->name('payments.onboard.refresh');
 });
+
+// =========================
+// UNIVERSAL CLS (Check-in / Lane / Scoring)
+// =========================
+Route::prefix('cls/{kind}/{uuid}')
+    ->whereIn('kind', ['event', 'league'])
+    ->group(function () {
+        // 1) Pick participant
+        Route::get('/participants', [PublicClsController::class, 'participants'])
+            ->name('public.cls.participants');
+
+        Route::post('/participants', [PublicClsController::class, 'participantsSubmit'])
+            ->name('public.cls.participants.submit');
+
+        // 2) Lane step
+        Route::get('/lane/{participant}', [PublicClsController::class, 'lane'])
+            ->whereNumber('participant')
+            ->name('public.cls.lane');
+
+        Route::post('/lane/{participant}', [PublicClsController::class, 'laneSubmit'])
+            ->whereNumber('participant')
+            ->name('public.cls.lane.submit');
+
+        // 3) Start scoring (for now just hands off to a placeholder)
+        Route::get('/scoring/start/{participant}', [PublicClsController::class, 'startScoring'])
+            ->whereNumber('participant')
+            ->name('public.cls.scoring.start');
+
+        // 4) Scoring grid + summary will be Livewire in the next step
+        Route::get('/scoring/score/{score}', [PublicClsController::class, 'record'])
+            ->whereNumber('score')
+            ->name('public.cls.scoring.record');
+
+        Route::get('/scoring/score/{score}/summary', [PublicClsController::class, 'summary'])
+            ->whereNumber('score')
+            ->name('public.cls.scoring.summary');
+    });
 
 require __DIR__.'/auth.php';

@@ -30,4 +30,14 @@ class EventParticipant extends Model
     {
         return $this->belongsTo(Event::class);
     }
+
+    public function scores()
+    {
+        return $this->hasMany(EventScore::class, 'event_participant_id');
+    }
+
+    public function checkins()
+    {
+        return $this->hasMany(EventCheckin::class, 'participant_id');
+    }
 }

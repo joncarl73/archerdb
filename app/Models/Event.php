@@ -188,4 +188,9 @@ class Event extends Model
     {
         return $this->hasMany(\App\Models\EventCheckin::class);
     }
+
+    public function scores()
+    {
+        return $this->hasMany(EventScore::class);
+    }
 }
