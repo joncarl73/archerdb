@@ -7,6 +7,8 @@ use App\Models\EventCheckin;
 use App\Models\EventLineTime;
 use App\Models\EventScore;
 use App\Models\League;
+use App\Models\LeagueCheckin;
+use App\Models\LeagueWeek;
 use Illuminate\Http\Request;
 
 class PublicClsController extends Controller
@@ -40,13 +42,15 @@ class PublicClsController extends Controller
     }
 
     /**
-     * Step 1: Event CLS – line time → participant pick.
+     * Step 1: CLS participants.
      *
-     * For events:
+     * Events:
      *   - First visit: show line time dropdown.
-     *   - After selecting: show participants filtered by selected line time.
+     *   - After selecting: show participants filtered by selected line time,
+     *     excluding already-checked-in archers.
      *
-     * League CLS will be wired in later.
+     * Leagues:
+     *   - Show a simple participant pick list (no line times here).
      */
     public function participants(Request $request, string $kind, string $uuid)
     {
@@ -91,25 +95,37 @@ class PublicClsController extends Controller
             ]);
         }
 
-        // League CLS flow will be wired in later; for now, nothing to do.
-        return view('public.cls.participants', [
-            'kind' => $kind,
-            'owner' => $owner,
-            'lineTimes' => collect(),
-            'selectedLineTime' => null,
-            'participants' => collect(),
-        ]);
+        if ($kind === 'league') {
+            /** @var League $owner */
+            // League CLS: simple archer pick list (no line times here)
+            $participants = $owner->participants()
+                ->orderBy('last_name')
+                ->orderBy('first_name')
+                ->get();
+
+            return view('public.cls.participants', [
+                'kind' => $kind,
+                'owner' => $owner,
+                'lineTimes' => collect(),
+                'selectedLineTime' => null,
+                'participants' => $participants,
+            ]);
+        }
+
+        abort(404);
     }
 
     /**
      * Step 1 POST: participant selection submit.
      *
-     * For events:
+     * Events:
      *   - Validates chosen participant + line_time_id.
      *   - Creates / ensures an event_checkins row.
      *   - Redirects to lane step.
      *
-     * League CLS will be wired in later.
+     * Leagues:
+     *   - Validates chosen participant.
+     *   - Redirects to league CLS lane step (week + lane selection).
      */
     public function participantsSubmit(Request $request, string $kind, string $uuid)
     {
@@ -174,8 +190,23 @@ class PublicClsController extends Controller
             ]);
         }
 
-        // League CLS integration will come later.
-        abort(501, 'League CLS integration not implemented yet.');
+        if ($kind === 'league') {
+            /** @var League $league */
+            $league = $owner;
+
+            // Roster participant
+            $participant = $league->participants()
+                ->findOrFail($data['participant_id']);
+
+            // For league CLS, week + lane will be chosen on the next step.
+            return redirect()->route('public.cls.lane', [
+                'kind' => $kind,
+                'uuid' => $uuid,
+                'participant' => $participant->id,
+            ]);
+        }
+
+        abort(404);
     }
 
     /**
@@ -194,16 +225,54 @@ class PublicClsController extends Controller
             $lineTime = $participant->line_time_id
                 ? EventLineTime::query()->find($participant->line_time_id)
                 : null;
-        } else {
-            abort(501, 'League CLS lane selection will be wired in later.');
+
+            return view('public.cls.lane', [
+                'kind' => $kind,
+                'owner' => $owner,
+                'participant' => $participant,
+                'lineTime' => $lineTime,
+                // League-only fields left null/empty
+                'weeks' => collect(),
+                'laneOptions' => [],
+            ]);
         }
 
-        return view('public.cls.lane', [
-            'kind' => $kind,
-            'owner' => $owner,
-            'participant' => $participant,
-            'lineTime' => $lineTime,
-        ]);
+        if ($kind === 'league') {
+            /** @var League $owner */
+            $league = $owner;
+            $participant = $league->participants()->findOrFail($participant);
+
+            // All weeks for this league (legacy uses this as the week dropdown)
+            $weeks = $league->weeks()
+                ->orderBy('week_number')
+                ->get();
+
+            // Use League::laneOptions() so we respect lane_breakdown (single, ab, abcd).
+            // Then reformat labels so that suffixed codes show as "Lane 1 (A)" etc.
+            $rawOptions = $league->laneOptions(); // e.g. ['1' => 'Lane 1', '1A' => 'Lane 1A', ...]
+            $laneOptions = [];
+
+            foreach ($rawOptions as $code => $label) {
+                // If code looks like "10A", "3B", etc., convert to "Lane 10 (A)"
+                if (preg_match('/^(\d+)([A-D])$/', $code, $m)) {
+                    $laneOptions[$code] = 'Lane '.$m[1].' ('.$m[2].')';
+                } else {
+                    // Single-lane codes remain as-is: "Lane 1", "Lane 2", ...
+                    $laneOptions[$code] = $label;
+                }
+            }
+
+            return view('public.cls.lane', [
+                'kind' => $kind,
+                'owner' => $league,
+                'participant' => $participant,
+                'lineTime' => null,
+                'weeks' => $weeks,
+                'laneOptions' => $laneOptions,
+            ]);
+        }
+
+        abort(404);
     }
 
     /**
@@ -219,15 +288,78 @@ class PublicClsController extends Controller
             /** @var Event $owner */
             $participant = $owner->participants()->findOrFail($participant);
             // NOTE: lane is read-only for events here; no updates occur.
-        } else {
-            abort(501, 'League CLS lane selection will be wired in later.');
+
+            return redirect()->route('public.cls.scoring.start', [
+                'kind' => $kind,
+                'uuid' => $uuid,
+                'participant' => $participant->id,
+            ]);
         }
 
-        return redirect()->route('public.cls.scoring.start', [
-            'kind' => $kind,
-            'uuid' => $uuid,
-            'participant' => $participant->id,
-        ]);
+        if ($kind === 'league') {
+            /** @var League $owner */
+            $league = $owner;
+            $participant = $league->participants()->findOrFail($participant);
+
+            $data = $request->validate([
+                'week_number' => ['required', 'integer', 'min:1'],
+                'lane_code' => ['required', 'string'],
+            ]);
+
+            // Resolve week from league + week_number
+            $week = LeagueWeek::query()
+                ->where('league_id', $league->id)
+                ->where('week_number', $data['week_number'])
+                ->firstOrFail();
+
+            // Decode lane_code into lane_number + lane_slot
+            $code = strtoupper(trim($data['lane_code']));
+            if (! preg_match('/^(\d+)([A-D])?$/', $code, $m)) {
+                return back()->withErrors(['lane_code' => 'Invalid lane selection.']);
+            }
+
+            $laneNumber = (int) $m[1];
+            $laneSlot = $m[2] ?? 'single'; // use 'single' when no letter
+
+            // Prevent double booking: same league + week + lane + slot
+            $taken = LeagueCheckin::query()
+                ->where('league_id', $league->id)
+                ->where('week_number', $week->week_number)
+                ->where('lane_number', $laneNumber)
+                ->where('lane_slot', $laneSlot)
+                ->exists();
+
+            if ($taken) {
+                return back()->withErrors([
+                    'lane_code' => 'That lane is already taken for the selected week.',
+                ])->withInput();
+            }
+
+            // Snapshot name/email similar to event_checkins / legacy league_checkins
+            $name = trim(($participant->first_name ?? '').' '.($participant->last_name ?? ''));
+
+            $checkin = LeagueCheckin::create([
+                'league_id' => $league->id,
+                'week_number' => $week->week_number,
+                'participant_id' => $participant->id,
+                'lane_number' => $laneNumber,
+                'lane_slot' => $laneSlot,
+                'participant_name' => $name,
+                'first_name' => $participant->first_name,
+                'last_name' => $participant->last_name,
+                'email' => $participant->email,
+                'checked_in_at' => now(),
+            ]);
+
+            // Hand off to CLS scoring start, passing checkin id for league
+            return redirect()->route('public.cls.scoring.start', [
+                'kind' => $kind,
+                'uuid' => $uuid,
+                'participant' => $participant->id,
+            ])->with('cls_league_checkin_id', $checkin->id);
+        }
+
+        abort(404);
     }
 
     /**
@@ -289,8 +421,39 @@ class PublicClsController extends Controller
             ]);
         }
 
-        // League path will be wired in later.
-        abort(501, 'League CLS scoring will be wired in later.');
+        if ($kind === 'league') {
+            /** @var League $owner */
+            $league = $owner;
+
+            // Prefer the fresh check-in id passed from laneSubmit
+            $checkinId = (int) $request->session()->pull('cls_league_checkin_id', 0);
+
+            if (! $checkinId) {
+                // Fallback: latest check-in for this participant in this league
+                $checkinId = LeagueCheckin::query()
+                    ->where('league_id', $league->id)
+                    ->where('participant_id', $participant)
+                    ->latest('id')
+                    ->value('id');
+            }
+
+            if (! $checkinId) {
+                abort(404, 'CLS-L1: No league check-in found for this archer.');
+            }
+
+            // Hand off to the existing personal-device scoring flow for leagues.
+            // This will:
+            //   - Validate league + mode
+            //   - Create/find LeagueWeekScore
+            //   - Seed ends
+            //   - Redirect to public.scoring.record
+            return redirect()->route('public.scoring.start', [
+                $league->public_uuid,
+                $checkinId,
+            ]);
+        }
+
+        abort(404);
     }
 
     /**
