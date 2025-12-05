@@ -9,6 +9,7 @@ use App\Models\EventScore;
 use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueWeek;
+use App\Models\LeagueWeekScore;
 use Illuminate\Http\Request;
 
 class PublicClsController extends Controller
@@ -51,6 +52,7 @@ class PublicClsController extends Controller
      *
      * Leagues:
      *   - Show a simple participant pick list (no line times here).
+     *     (We do NOT filter by prior check-ins so archers can check in for multiple weeks.)
      */
     public function participants(Request $request, string $kind, string $uuid)
     {
@@ -97,15 +99,18 @@ class PublicClsController extends Controller
 
         if ($kind === 'league') {
             /** @var League $owner */
-            // League CLS: simple archer pick list (no line times here)
-            $participants = $owner->participants()
+            $league = $owner;
+
+            // League CLS: dropdown of all roster participants (no per-league check-in filter)
+            // Because check-ins are per-week, we allow the same archer to check in for multiple weeks.
+            $participants = $league->participants()
                 ->orderBy('last_name')
                 ->orderBy('first_name')
                 ->get();
 
             return view('public.cls.participants', [
                 'kind' => $kind,
-                'owner' => $owner,
+                'owner' => $league,
                 'lineTimes' => collect(),
                 'selectedLineTime' => null,
                 'participants' => $participants,
@@ -212,7 +217,11 @@ class PublicClsController extends Controller
     /**
      * Step 2: Lane / line time page.
      *
-     * For events, lanes are assigned in the back office and are read-only here.
+     * Events:
+     *   - Lanes are assigned in the back office and are read-only here.
+     *
+     * Leagues:
+     *   - Archer picks week + lane, with taken lanes hidden.
      */
     public function lane(Request $request, string $kind, string $uuid, int $participant)
     {
@@ -234,6 +243,7 @@ class PublicClsController extends Controller
                 // League-only fields left null/empty
                 'weeks' => collect(),
                 'laneOptions' => [],
+                'takenLanesByWeek' => [],
             ]);
         }
 
@@ -242,24 +252,38 @@ class PublicClsController extends Controller
             $league = $owner;
             $participant = $league->participants()->findOrFail($participant);
 
-            // All weeks for this league (legacy uses this as the week dropdown)
+            // All weeks for this league
             $weeks = $league->weeks()
                 ->orderBy('week_number')
                 ->get();
 
-            // Use League::laneOptions() so we respect lane_breakdown (single, ab, abcd).
-            // Then reformat labels so that suffixed codes show as "Lane 1 (A)" etc.
-            $rawOptions = $league->laneOptions(); // e.g. ['1' => 'Lane 1', '1A' => 'Lane 1A', ...]
+            // Use League::laneOptions() so we respect lane_breakdown
+            $rawOptions = $league->laneOptions();
             $laneOptions = [];
 
             foreach ($rawOptions as $code => $label) {
-                // If code looks like "10A", "3B", etc., convert to "Lane 10 (A)"
+                // Normalize to "Lane 1 (A)" style when there is a slot letter
                 if (preg_match('/^(\d+)([A-D])$/', $code, $m)) {
                     $laneOptions[$code] = 'Lane '.$m[1].' ('.$m[2].')';
                 } else {
-                    // Single-lane codes remain as-is: "Lane 1", "Lane 2", ...
-                    $laneOptions[$code] = $label;
+                    $laneOptions[$code] = $label; // e.g. "Lane 1" for single lanes
                 }
+            }
+
+            // Build [week_number => ['1A', '1B', '2', ...]] of already-taken lanes
+            $checkins = LeagueCheckin::query()
+                ->where('league_id', $league->id)
+                ->get(['week_number', 'lane_number', 'lane_slot']);
+
+            $takenLanesByWeek = [];
+
+            foreach ($checkins as $c) {
+                $slot = $c->lane_slot && strtolower($c->lane_slot) !== 'single'
+                    ? strtoupper($c->lane_slot)
+                    : '';
+                $code = $c->lane_number.$slot; // e.g. "3A" or "5"
+
+                $takenLanesByWeek[$c->week_number][] = $code;
             }
 
             return view('public.cls.lane', [
@@ -269,6 +293,7 @@ class PublicClsController extends Controller
                 'lineTime' => null,
                 'weeks' => $weeks,
                 'laneOptions' => $laneOptions,
+                'takenLanesByWeek' => $takenLanesByWeek,
             ]);
         }
 
@@ -278,7 +303,12 @@ class PublicClsController extends Controller
     /**
      * Step 2 POST: confirm lane & continue to scoring.
      *
-     * For events we do not change lane here (organizer-assigned only).
+     * Events:
+     *   - Lane is read-only here; just proceed to scoring.
+     *
+     * Leagues:
+     *   - Persist week + lane selection to league_checkins,
+     *     then hand off to CLS scoring start.
      */
     public function laneSubmit(Request $request, string $kind, string $uuid, int $participant)
     {
@@ -351,7 +381,7 @@ class PublicClsController extends Controller
                 'checked_in_at' => now(),
             ]);
 
-            // Hand off to CLS scoring start, passing checkin id for league
+            // Hand off to CLS scoring start, passing checkin id for league via session
             return redirect()->route('public.cls.scoring.start', [
                 'kind' => $kind,
                 'uuid' => $uuid,
@@ -365,31 +395,55 @@ class PublicClsController extends Controller
     /**
      * Step 3: scoring start.
      *
-     * Creates or finds an EventScore (League integration later) and redirects
-     * to the CLS scoring grid.
+     * Events:
+     *   - Enforce tablet/kiosk vs personal-device rules.
+     *   - Create/find EventScore row and refresh its scoring config from the ruleset
+     *     so the keypad scale always matches the current ruleset.
+     *
+     * Leagues:
+     *   - Enforce tablet/kiosk vs personal-device rules.
+     *   - Create/find a LeagueWeekScore row and seed ends (legacy league semantics),
+     *     then route into CLS record() using the legacy league scoring design.
      */
     public function startScoring(Request $request, string $kind, string $uuid, int $participant)
     {
         [$kind, $owner] = $this->resolveOwnerOr404($kind, $uuid);
 
+        //
+        // EVENTS (ruleset-driven CLS scoring)
+        //
         if ($kind === 'event') {
             /** @var Event $owner */
-            $participantModel = $owner->participants()->findOrFail($participant);
+            $event = $owner;
+            $participantModel = $event->participants()->findOrFail($participant);
 
+            // If this event is configured for tablet/kiosk scoring,
+            // do NOT show the scoring UI on the archer's device.
+            if ($event->scoring_mode === Event::SCORING_TABLET) {
+                $name = trim(($participantModel->first_name ?? '').' '.($participantModel->last_name ?? ''));
+
+                return view('public.cls.wait-for-tablet', [
+                    'kind' => $kind,
+                    'owner' => $event,
+                    'participantName' => $name ?: 'Archer',
+                ]);
+            }
+
+            // Personal-device flow
             $lineTimeId = $participantModel->line_time_id;
             if (! $lineTimeId) {
                 abort(400, 'This participant does not have an assigned line time yet.');
             }
 
-            $ruleset = $owner->ruleset;
-            $overrides = $owner->rulesetOverride?->overrides ?? [];
+            $ruleset = $event->ruleset;
+            $overrides = $event->rulesetOverride?->overrides ?? [];
 
             // Pull scoring settings, preferring overrides when present.
             $arrowsPerEnd = (int) ($overrides['arrows_per_end'] ?? $ruleset->arrows_per_end ?? 3);
             $endsPlanned = (int) ($overrides['ends_per_session'] ?? $ruleset->ends_per_session ?? 10);
             $scoringValues = $overrides['scoring_values'] ?? $ruleset->scoring_values ?? null;
             $xValue = $overrides['x_value'] ?? $ruleset->x_value ?? null;
-            $scoringSystem = (string) ($overrides['scoring_system'] ?? '10');
+            $scoringSystem = (string) ($overrides['scoring_system'] ?? $ruleset->scoring_system ?? '10');
 
             if (is_array($scoringValues) && ! empty($scoringValues)) {
                 $maxScore = max(array_map('intval', $scoringValues));
@@ -400,19 +454,22 @@ class PublicClsController extends Controller
             // One score row per event + line_time + participant.
             $score = EventScore::firstOrCreate(
                 [
-                    'event_id' => $owner->id,
+                    'event_id' => $event->id,
                     'event_line_time_id' => $lineTimeId,
                     'event_participant_id' => $participantModel->id,
-                ],
-                [
-                    'arrows_per_end' => $arrowsPerEnd,
-                    'ends_planned' => $endsPlanned,
-                    'scoring_system' => $scoringSystem,
-                    'scoring_values' => $scoringValues,
-                    'x_value' => $xValue,
-                    'max_score' => $maxScore,
                 ]
             );
+
+            // Always refresh from the ruleset so keypad follows the current scale.
+            $score->fill([
+                'arrows_per_end' => $arrowsPerEnd,
+                'ends_planned' => $endsPlanned,
+                'scoring_system' => $scoringSystem,
+                'scoring_values' => $scoringValues,
+                'x_value' => $xValue,
+                'max_score' => $maxScore,
+            ]);
+            $score->save();
 
             return redirect()->route('public.cls.scoring.record', [
                 'kind' => $kind,
@@ -421,9 +478,31 @@ class PublicClsController extends Controller
             ]);
         }
 
+        //
+        // LEAGUES (CLS wired to legacy league scoring design)
+        //
         if ($kind === 'league') {
-            /** @var League $owner */
+            /** @var League $league */
             $league = $owner;
+            $participantModel = $league->participants()->findOrFail($participant);
+
+            // Normalize scoring_mode to a string ("personal_device", "tablet", etc.)
+            $mode = is_string($league->scoring_mode)
+                ? $league->scoring_mode
+                : ($league->scoring_mode->value ?? $league->scoring_mode);
+
+            // If this league is tablet/kiosk mode, tell the archer they'll receive a tablet.
+            if ($mode !== 'personal_device') {
+                $name = trim(($participantModel->first_name ?? '').' '.($participantModel->last_name ?? ''));
+
+                return view('public.cls.wait-for-tablet', [
+                    'kind' => $kind,
+                    'owner' => $league,
+                    'participantName' => $name ?: 'Archer',
+                ]);
+            }
+
+            // PERSONAL-DEVICE LEAGUE FLOW
 
             // Prefer the fresh check-in id passed from laneSubmit
             $checkinId = (int) $request->session()->pull('cls_league_checkin_id', 0);
@@ -432,7 +511,7 @@ class PublicClsController extends Controller
                 // Fallback: latest check-in for this participant in this league
                 $checkinId = LeagueCheckin::query()
                     ->where('league_id', $league->id)
-                    ->where('participant_id', $participant)
+                    ->where('participant_id', $participantModel->id)
                     ->latest('id')
                     ->value('id');
             }
@@ -441,15 +520,56 @@ class PublicClsController extends Controller
                 abort(404, 'CLS-L1: No league check-in found for this archer.');
             }
 
-            // Hand off to the existing personal-device scoring flow for leagues.
-            // This will:
-            //   - Validate league + mode
-            //   - Create/find LeagueWeekScore
-            //   - Seed ends
-            //   - Redirect to public.scoring.record
-            return redirect()->route('public.scoring.start', [
-                $league->public_uuid,
-                $checkinId,
+            $checkin = LeagueCheckin::query()->findOrFail($checkinId);
+
+            // Determine which week this is for that league.
+            $week = LeagueWeek::query()
+                ->where('league_id', $league->id)
+                ->where('week_number', $checkin->week_number)
+                ->firstOrFail();
+
+            // League scoring does NOT use rulesets – it’s driven by the league fields
+            // (arrows_per_end, ends_per_day, x_ring_value, max_per_arrow).
+            $score = LeagueWeekScore::firstOrCreate(
+                [
+                    'league_id' => $league->id,
+                    'league_participant_id' => $participantModel->id,
+                    'league_week_id' => $week->id,
+                ],
+                [
+                    'arrows_per_end' => $league->arrows_per_end,
+                    'ends_planned' => $league->ends_per_day,
+                    'x_value' => $league->x_ring_value,
+                    'max_score' => $league->max_per_arrow,
+                ]
+            );
+
+            // Seed ends if needed (same behavior as legacy league scoring).
+            if ($score->ends()->count() < $score->ends_planned) {
+                $existingNumbers = $score->ends()
+                    ->orderBy('end_number')
+                    ->pluck('end_number')
+                    ->all();
+
+                for ($i = 1; $i <= $score->ends_planned; $i++) {
+                    if (in_array($i, $existingNumbers, true)) {
+                        continue;
+                    }
+
+                    $score->ends()->create([
+                        'end_number' => $i,
+                        'scores' => [],
+                        'total' => 0,
+                        'x_count' => 0,
+                    ]);
+                }
+            }
+
+            // Route into CLS record() with the legacy league scoring design.
+            return redirect()->route('public.cls.scoring.record', [
+                'kind' => 'league',
+                'uuid' => $uuid,
+                'score' => $score->id,
             ]);
         }
 
@@ -458,11 +578,21 @@ class PublicClsController extends Controller
 
     /**
      * CLS scoring grid endpoint — wraps the Livewire scoring component.
+     *
+     * Events:
+     *   - Uses the CLS scoring UI (public.cls.scoring-record).
+     *
+     * Leagues:
+     *   - Reuses the legacy league scoring UI (public.scoring.record),
+     *     but under CLS routes.
      */
     public function record(string $kind, string $uuid, int $score)
     {
         [$kind, $owner] = $this->resolveOwnerOr404($kind, $uuid);
 
+        //
+        // EVENTS → CLS scoring UI (new component)
+        //
         if ($kind === 'event') {
             /** @var Event $owner */
             $scoreModel = EventScore::query()
@@ -484,33 +614,98 @@ class PublicClsController extends Controller
             ]);
         }
 
-        abort(501, 'League CLS scoring will be wired in later.');
+        //
+        // LEAGUES → legacy league scoring UI, but via CLS route
+        //
+        if ($kind === 'league') {
+            /** @var League $owner */
+            $scoreModel = LeagueWeekScore::query()
+                ->with(['league', 'participant'])
+                ->findOrFail($score);
+
+            if ($scoreModel->league_id !== $owner->id) {
+                abort(404, 'CLS-L3');
+            }
+
+            $mode = is_string($owner->scoring_mode)
+                ? $owner->scoring_mode
+                : ($owner->scoring_mode->value ?? $owner->scoring_mode);
+
+            $kioskMode = ($mode !== 'personal_device');
+            $kioskReturnTo = null; // can be wired to a CLS league/kiosk board later
+
+            // Re-use the existing league scoring view + Livewire component.
+            return view('public.cls.scoring-record', [
+                'kind' => $kind,
+                'owner' => $owner,
+                'uuid' => $uuid,
+                'score' => $scoreModel,
+                'kioskMode' => $kioskMode,
+                'kioskReturnTo' => $kioskReturnTo,
+            ]);
+        }
+
+        abort(404);
     }
 
     /**
      * CLS scoring summary endpoint.
+     *
+     * Events:
+     *   - Uses CLS summary UI (public.cls.scoring-summary).
+     *
+     * Leagues:
+     *   - Reuses the legacy league summary UI (public.scoring.summary),
+     *     but via the CLS route, so the whole flow is under /cls.
      */
     public function summary(string $kind, string $uuid, int $score)
     {
         [$kind, $owner] = $this->resolveOwnerOr404($kind, $uuid);
 
+        //
+        // EVENTS (ruleset-driven CLS scoring)
+        //
         if ($kind === 'event') {
             /** @var Event $owner */
+            $event = $owner;
+
             $scoreModel = EventScore::query()
                 ->with(['event', 'participant', 'ends'])
                 ->findOrFail($score);
 
-            if ($scoreModel->event_id !== $owner->id) {
+            if ($scoreModel->event_id !== $event->id) {
                 abort(404, 'CLS-E4');
             }
 
             return view('public.cls.scoring-summary', [
                 'kind' => $kind,
-                'owner' => $owner,
+                'owner' => $event,
                 'score' => $scoreModel,
             ]);
         }
 
-        abort(501, 'League CLS scoring will be wired in later.');
+        //
+        // LEAGUES (CLS summary for legacy league scoring design)
+        //
+        if ($kind === 'league') {
+            /** @var League $owner */
+            $league = $owner;
+
+            $scoreModel = LeagueWeekScore::query()
+                ->with(['league', 'participant', 'week', 'ends'])
+                ->findOrFail($score);
+
+            if ($scoreModel->league_id !== $league->id) {
+                abort(404, 'CLS-L4');
+            }
+
+            return view('public.cls.scoring-summary', [
+                'kind' => $kind,
+                'owner' => $league,
+                'score' => $scoreModel,
+            ]);
+        }
+
+        abort(404);
     }
 }

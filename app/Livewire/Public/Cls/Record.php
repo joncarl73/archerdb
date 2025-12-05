@@ -5,13 +5,16 @@ namespace App\Livewire\Public\Cls;
 use App\Models\Event;
 use App\Models\EventScore;
 use App\Models\EventScoreEnd;
+use App\Models\League;
+use App\Models\LeagueWeekEnd;
+use App\Models\LeagueWeekScore;
 use Illuminate\View\View;
 use Livewire\Component;
 
 class Record extends Component
 {
     // Basic context
-    public $kind;
+    public $kind;          // 'event' | 'league'
 
     public $uuid;
 
@@ -19,11 +22,11 @@ class Record extends Component
 
     public $kioskReturnTo = null;
 
-    // ID of the EventScore row we’re working with
+    // ID of the score row we’re working with
     public $scoreId;
 
-    // Display-only props so Blade doesn’t need the model
-    public $eventTitle = null;
+    // Display-only props
+    public $eventTitle = null;   // also used for league title
 
     public $archerName = null;
 
@@ -32,7 +35,7 @@ class Record extends Component
 
     public $endsPlanned = 10;
 
-    public $scoringSystem = '10';
+    public $scoringSystem = '10';  // mainly for events
 
     public $xValue = null;
 
@@ -41,9 +44,9 @@ class Record extends Component
     public $showSeparateXButton = false;
 
     /**
-     * Keypad scoring values (e.g. [14, 12, 10, 8, 5, 0]).
+     * Keypad scoring values (e.g. [10, 9, 8, ..., 0]).
      *
-     * @var array<int,int>
+     * @var array<int,int|string>
      */
     public $keypadValues = [];
 
@@ -68,18 +71,36 @@ class Record extends Component
         bool $kioskMode = false,
         ?string $kioskReturnTo = null,
     ): void {
-        $this->kind = strtolower($kind);
+        $this->kind = strtolower($kind);   // 'event' or 'league'
         $this->uuid = $uuid;
         $this->scoreId = $scoreId;
         $this->kioskMode = $kioskMode;
         $this->kioskReturnTo = $kioskReturnTo;
 
-        if ($this->kind !== 'event') {
-            // League integration will be wired in a later step.
-            abort(501, 'CLS league scoring not implemented yet.');
+        if ($this->kind === 'event') {
+            $this->mountEventScore($scoreId, $uuid);
+        } elseif ($this->kind === 'league') {
+            $this->mountLeagueScore($scoreId, $uuid);
+        } else {
+            abort(404, 'CLS-UNKNOWN-KIND');
         }
 
-        // Load the EventScore and related models locally (not stored as a property)
+        // Default keypad values based on maxScore if not already set
+        if (empty($this->keypadValues)) {
+            $max = $this->maxScore ?: 10;
+            $this->keypadValues = range($max, 0);
+        }
+
+        // Default focus on first cell.
+        $this->selectedEnd = 1;
+        $this->selectedArrow = 0;
+    }
+
+    /**
+     * Initialize state for an EventScore (ruleset-driven).
+     */
+    protected function mountEventScore(int $scoreId, string $uuid): void
+    {
         $score = EventScore::query()
             ->with(['event', 'participant', 'ends'])
             ->findOrFail($scoreId);
@@ -110,7 +131,6 @@ class Record extends Component
         $this->maxScore = (int) ($score->max_score ?? 10);
 
         // Determine keypad scoring values from snapshot or fallback.
-        // Determine keypad scoring values from snapshot or fallback.
         $values = $score->scoring_values ?? null;
 
         if (! is_array($values) || empty($values)) {
@@ -119,32 +139,26 @@ class Record extends Component
             $values = range($max, 0);
         }
 
-        // Normalize to distinct ints (numeric) in descending order.
+        // Normalize to distinct ints in descending order.
         $values = array_values(array_unique(array_map('intval', $values)));
         rsort($values);
 
-        // Decide if we should show a separate "X" button in addition to "10".
-        // We only do this when:
-        //   - scoring system is "10",
-        //   - xValue is set and equals the max score,
-        //   - and the scale is a simple 10..0 range.
+        $this->keypadValues = $values;
+
+        // Decide if we should show a separate "X" button.
         $this->showSeparateXButton = false;
 
         if ($this->scoringSystem === '10' && $this->xValue !== null) {
             $max = $this->maxScore ?: max($values);
-
             $expected = range($max, 0);
-            sort($expected);
-
             $valsSorted = $values;
+            sort($expected);
             sort($valsSorted);
 
             if ($valsSorted === $expected && (int) $this->xValue === (int) $max) {
                 $this->showSeparateXButton = true;
             }
         }
-
-        $this->keypadValues = $values;
 
         // Build local buffer from existing ends.
         $buffer = [];
@@ -174,21 +188,101 @@ class Record extends Component
 
         ksort($buffer);
         $this->buffer = $buffer;
+    }
 
-        // Default focus on first cell.
-        $this->selectedEnd = 1;
-        $this->selectedArrow = 0;
+    /**
+     * Initialize state for a LeagueWeekScore (legacy design, CLS UI).
+     */
+    protected function mountLeagueScore(int $scoreId, string $uuid): void
+    {
+        $score = LeagueWeekScore::query()
+            ->with(['league', 'participant', 'ends'])
+            ->findOrFail($scoreId);
+
+        /** @var League $league */
+        $league = $score->league;
+
+        if ($league->public_uuid !== $uuid) {
+            abort(404, 'CLS-L2');
+        }
+
+        $this->eventTitle = $league->title ?? $league->name ?? 'League';
+
+        $participant = $score->participant;
+        if ($participant) {
+            $first = $participant->first_name ?? '';
+            $last = $participant->last_name ?? '';
+            $name = trim($first.' '.$last);
+            $this->archerName = $name ?: null;
+        }
+
+        // League scoring config comes directly from the league/week snapshot.
+        $this->arrowsPerEnd = (int) ($score->arrows_per_end ?? 3);
+        $this->endsPlanned = (int) ($score->ends_planned ?? 10);
+        $this->xValue = $score->x_value;
+        $this->maxScore = (int) ($score->max_score ?? 10);
+
+        // League does not have scoring_values on the score row;
+        // we just build a simple 10..0 + X style keypad.
+        $max = $this->maxScore ?: 10;
+        $values = range($max, 0);
+
+        $this->keypadValues = $values;
+
+        // If x_value equals max, we’ll show a separate X key.
+        $this->showSeparateXButton = ($this->xValue !== null && (int) $this->xValue === (int) $max);
+
+        // Build buffer from league_week_ends (scores JSON only).
+        $buffer = [];
+
+        foreach ($score->ends as $end) {
+            $endNumber = (int) $end->end_number;
+            $scores = $end->scores ?? [];
+
+            $row = [];
+            for ($i = 0; $i < $this->arrowsPerEnd; $i++) {
+                $row[$i] = $scores[$i] ?? null;
+            }
+
+            $buffer[$endNumber] = $row;
+        }
+
+        // Ensure we have rows for all planned ends.
+        for ($endNumber = 1; $endNumber <= $this->endsPlanned; $endNumber++) {
+            if (! array_key_exists($endNumber, $buffer)) {
+                $row = [];
+                for ($i = 0; $i < $this->arrowsPerEnd; $i++) {
+                    $row[$i] = null;
+                }
+                $buffer[$endNumber] = $row;
+            }
+        }
+
+        ksort($buffer);
+        $this->buffer = $buffer;
     }
 
     public function getKeypadKeysProperty(): array
     {
-        // Same pattern as legacy league scoring:
-        // [ 'X', maxScore, maxScore-1, ..., 0, 'M' ]
-        $nums = range($this->maxScore, 0);
-        array_unshift($nums, 'X');
-        $nums[] = 'M';
+        //
+        // For both events and leagues we build the **UI** keypad off
+        // $this->keypadValues, then decorate with X/M when appropriate.
+        //
+        $keys = [];
 
-        return $nums;
+        // Optional X button (when configured)
+        if ($this->showSeparateXButton) {
+            $keys[] = 'X';
+        }
+
+        foreach ($this->keypadValues as $v) {
+            $keys[] = (string) $v;
+        }
+
+        // Always include M (miss) at the end
+        $keys[] = 'M';
+
+        return $keys;
     }
 
     private function mapKeyToPoints(string $key): int
@@ -257,7 +351,22 @@ class Record extends Component
         }
     }
 
-    protected function persistBufferedScores(): EventScore
+    /**
+     * Persist the buffered scores to the database and return the score model.
+     *
+     * @return \App\Models\EventScore|\App\Models\LeagueWeekScore
+     */
+    protected function persistBufferedScores()
+    {
+        if ($this->kind === 'league') {
+            return $this->persistLeagueScores();
+        }
+
+        // Default: event
+        return $this->persistEventScores();
+    }
+
+    protected function persistEventScores(): EventScore
     {
         $score = EventScore::query()
             ->with('ends')
@@ -287,10 +396,77 @@ class Record extends Component
             $endModel->event_score_id = $score->id;
             $endModel->end_number = $endNumber;
 
+            // This will populate scores, total, x_count on the event_score_ends table
             $endModel->fillScoresAndSave($scores);
         }
 
-        // Keep a fresh model if needed later
+        $score->refresh()->load('ends');
+
+        return $score;
+    }
+
+    protected function persistLeagueScores(): LeagueWeekScore
+    {
+        $score = LeagueWeekScore::query()
+            ->with('ends')
+            ->findOrFail($this->scoreId);
+
+        $existingByEnd = $score->ends->keyBy('end_number');
+
+        $totalScore = 0;
+        $totalX = 0;
+        $xVal = $this->xValue !== null ? (int) $this->xValue : null;
+
+        foreach ($this->buffer as $endNumber => $row) {
+            $endNumber = (int) $endNumber;
+
+            if ($endNumber < 1 || $endNumber > $this->endsPlanned) {
+                continue;
+            }
+
+            // Normalize row length to arrowsPerEnd
+            $scores = [];
+            for ($i = 0; $i < $this->arrowsPerEnd; $i++) {
+                $scores[$i] = $row[$i] ?? null;
+            }
+
+            /** @var LeagueWeekEnd $endModel */
+            $endModel = $existingByEnd[$endNumber] ?? new LeagueWeekEnd([
+                'league_week_score_id' => $score->id,
+                'end_number' => $endNumber,
+            ]);
+
+            $endModel->league_week_score_id = $score->id;
+            $endModel->end_number = $endNumber;
+            $endModel->scores = $scores;   // <-- only scores on league_week_ends
+            $endModel->save();
+
+            // Compute per-end totals in-memory
+            $endSum = 0;
+            $endX = 0;
+
+            foreach ($scores as $v) {
+                if ($v === null) {
+                    continue;
+                }
+
+                $v = (int) $v;
+                $endSum += $v;
+
+                if ($xVal !== null && $v === $xVal) {
+                    $endX++;
+                }
+            }
+
+            $totalScore += $endSum;
+            $totalX += $endX;
+        }
+
+        // Persist aggregate totals back to league_week_scores
+        $score->total_score = $totalScore;
+        $score->x_count = $totalX;
+        $score->save();
+
         $score->refresh()->load('ends');
 
         return $score;
@@ -310,20 +486,25 @@ class Record extends Component
      */
     public function done(): void
     {
+        // 1) Flush any buffered scores to the DB
         $score = $this->persistBufferedScores();
 
-        // Redirect behavior: kiosk vs personal device
+        // 2) Kiosk / tablet mode → bounce back to kiosk board
         if ($this->kioskMode && $this->kioskReturnTo) {
-            $this->redirect($this->kioskReturnTo);
+            $this->redirect($this->kioskReturnTo, navigate: true);
 
             return;
         }
 
+        // 3) Personal device → CLS summary (event or league)
+        $kind = $this->kind ?? 'event';
+        $uuid = $this->uuid;
+
         $this->redirectRoute('public.cls.scoring.summary', [
-            'kind' => $this->kind,
-            'uuid' => $this->uuid,
+            'kind' => $kind,
+            'uuid' => $uuid,
             'score' => $score->id,
-        ]);
+        ], navigate: true);
     }
 
     /**

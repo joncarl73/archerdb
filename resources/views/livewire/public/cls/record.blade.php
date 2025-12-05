@@ -1,6 +1,14 @@
 {{-- resources/views/livewire/public/cls/record.blade.php --}}
 @php
-  $eventTitle        = $this->eventTitle ?? null;
+  // Kind: 'event' or 'league' (passed from PublicClsController → scoring-record view)
+  $kind      = $this->kind ?? 'event';
+  $isLeague  = ($kind === 'league');
+
+  // Generic title handling (CLS owner)
+  $ownerTitle = $this->eventTitle
+    ?? $this->leagueTitle
+    ?? null;
+
   $name              = $this->archerName ?? null;
   $kioskMode         = $this->kioskMode ?? false;
   $kioskReturnTo     = $this->kioskReturnTo ?? null;
@@ -26,6 +34,10 @@
   }
 
   $plannedEnds = $this->endsPlanned ?? count($ends);
+
+  // Header label
+  $headerTitle = $isLeague ? 'League scoring' : 'Event scoring';
+  $ownerLabel  = $ownerTitle ?? ($isLeague ? 'League' : 'Event');
 @endphp
 
 <section class="w-full mb-5">
@@ -34,11 +46,11 @@
     <div class="sm:flex sm:items-center">
       <div class="sm:flex-auto">
         <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-          Event scoring
+          {{ $headerTitle }}
         </h1>
 
         <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
-          {{ $eventTitle ?? 'Event' }}
+          {{ $ownerLabel }}
           @if ($name)
             • Archer: {{ $name }}
           @endif
@@ -57,7 +69,7 @@
             Back to kiosk
           </flux:button>
         @else
-          {{-- Personal-device flow: finish this score and go to summary --}}
+          {{-- Personal-device flow: finish this score and go to CLS summary (event or league) --}}
           <flux:button type="button" variant="primary" wire:click="done">
             End scoring
           </flux:button>
@@ -116,7 +128,7 @@
                         } elseif ((int)$rawVal === 0) {
                             $cellLabel = 'M';
                         } elseif ($scoringSystem === '10' && $xValue !== null && (int)$rawVal === (int)$xValue) {
-                            // Match legacy league behavior: show X for any score equal to x_value
+                            // CLS normalized: show X for any score equal to x_value
                             $cellLabel = 'X';
                         } else {
                             $cellLabel = $rawVal;
@@ -197,7 +209,7 @@
         </div>
 
         <div class="mt-6 space-y-6">
-          {{-- Keypad (league-style) --}}
+          {{-- Keypad (ruleset/league-style, supplied by Livewire via $keypadKeys) --}}
           <div>
             <div class="grid grid-cols-3 gap-3 sm:grid-cols-6">
               @foreach ($this->keypadKeys as $key)

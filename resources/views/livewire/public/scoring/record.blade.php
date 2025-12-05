@@ -33,7 +33,7 @@
           <flux:button as="a" variant="primary"
             href="{{ route('public.scoring.summary', [$league->public_uuid, $score->id]) }}">
             {{-- If your "scoring grid" is a different route, replace the route() above. --}}
-            End scoring
+            End scoringbb
           </flux:button>
         @endif
       </div>

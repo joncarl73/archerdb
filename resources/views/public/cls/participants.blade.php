@@ -22,7 +22,8 @@
         </p>
       @else
         <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
-          Select the archer you want to check in. You’ll confirm lane and start scoring on the next steps.
+          Select the archer you want to check in. Archers who have already checked in will not appear in this list.
+          You’ll confirm lane and start scoring on the next steps.
         </p>
       @endif
 
@@ -139,6 +140,11 @@
                         </option>
                       @endforeach
                     </flux:select>
+                    @error('participant_id')
+                      <p class="mt-1 text-sm text-red-600 dark:text-red-400">
+                        {{ $message }}
+                      </p>
+                    @enderror
                   </div>
 
                   <div class="mt-4 flex items-center justify-between">
@@ -157,10 +163,10 @@
               @endif
             @endif
           @else
-            {{-- LEAGUE FLOW (current): archer-only selection --}}
+            {{-- LEAGUE FLOW: archer selection via dropdown --}}
             @if ($participants->isEmpty())
               <p class="text-sm text-zinc-600 dark:text-zinc-400">
-                No participants are available for this {{ $kind }} yet.
+                No participants are available to check in for this {{ $kind }}. Everyone may already be checked in.
               </p>
             @else
               <form
@@ -170,37 +176,48 @@
               >
                 @csrf
 
-                <div class="space-y-2">
-                  @foreach ($participants as $p)
-                    @php
-                      $name = trim(($p->first_name ?? '').' '.($p->last_name ?? ''));
-                    @endphp
+                <div>
+                  <label class="block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    Archer
+                  </label>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    Choose the archer you want to check in. Archers who have already checked in will not be shown.
+                  </p>
 
-                    <label class="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="participant_id"
+                  <flux:select
+                    name="participant_id"
+                    required
+                    class="mt-2 w-full"
+                  >
+                    <option value="">Select archer…</option>
+                    @foreach ($participants as $p)
+                      @php
+                        $name = trim(($p->first_name ?? '').' '.($p->last_name ?? ''));
+                        $label = $name ?: ($p->email ?: '#'.$p->id);
+                      @endphp
+                      <option
                         value="{{ $p->id }}"
-                        class="h-4 w-4 border-zinc-300 text-blue-600 focus:ring-blue-500"
-                        required
-                      />
-
-                      <div>
-                        <div class="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                          {{ $name ?: 'Unknown name' }}
-                        </div>
-
-                        @if (!empty($p->email))
-                          <div class="text-xs text-zinc-500">
-                            {{ $p->email }}
-                          </div>
-                        @endif
-                      </div>
-                    </label>
-                  @endforeach
+                        @selected(old('participant_id') == $p->id)
+                      >
+                        {{ $label }}
+                      </option>
+                    @endforeach
+                  </flux:select>
+                  @error('participant_id')
+                    <p class="mt-1 text-sm text-red-600 dark:text-red-400">
+                      {{ $message }}
+                    </p>
+                  @enderror
                 </div>
 
-                <div class="mt-4 flex justify-end">
+                <div class="mt-4 flex items-center justify-between">
+                  <a
+                    href="{{ url()->previous() }}"
+                    class="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  >
+                    ← Back
+                  </a>
+
                   <flux:button type="submit" variant="primary">
                     Continue
                   </flux:button>

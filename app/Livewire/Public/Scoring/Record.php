@@ -202,15 +202,43 @@ class Record extends Component
 
     public function finalizeEnd(): void
     {
-        // If kiosk is truly active (tablet + league night + today + flags), go back to kiosk board.
+        // Kiosk/tablet mode: keep existing behavior (back to kiosk board)
         if ($this->shouldShowKioskControls()) {
-            $this->redirect($this->kioskReturnTo, navigate: true);
+            $this->closeKeypad();
+
+            if ($this->kioskReturnTo) {
+                $this->redirect($this->kioskReturnTo, navigate: true);
+            }
 
             return;
         }
 
-        // Personal-device flow: do NOT go to kiosk — just close keypad (remain on scoring grid page).
+        // Personal-device league scoring:
+        // When the archer taps "Done", go to the CLS summary route for leagues.
         $this->closeKeypad();
+
+    }
+
+    public function endScoring(): void
+    {
+        // Kiosk/tablet mode: behavior can be whatever you prefer; for now just go back
+        if ($this->shouldShowKioskControls()) {
+            if ($this->kioskReturnTo) {
+                $this->redirect($this->kioskReturnTo, navigate: true);
+
+                return;
+            }
+        }
+
+        // Personal-device LEAGUE flow → CLS summary
+        $this->redirect(
+            route('public.cls.scoring.summary', [
+                'kind' => 'league',
+                'uuid' => $this->uuid,       // league public_uuid
+                'score' => $this->score->id,  // LeagueWeekScore id
+            ]),
+            navigate: true
+        );
     }
 
     public function done(): void

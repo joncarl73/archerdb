@@ -66,12 +66,22 @@
           </flux:button>
         </form>
       @else
-        {{-- League: week + lane selection for CLS --}}
+        {{-- League: week + lane selection for CLS, with taken lanes hidden per week --}}
         <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
           Select your week and lane assignment, then continue to scoring.
         </p>
 
-        <div class="mt-4 rounded-xl border border-zinc-200 bg-white p-4 text-sm shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <div
+          class="mt-4 rounded-xl border border-zinc-200 bg-white p-4 text-sm shadow-sm dark:border-zinc-700 dark:bg-zinc-900"
+          x-data="{
+            selectedWeek: '{{ old('week_number') }}',
+            takenByWeek: @js($takenLanesByWeek ?? []),
+            isLaneTaken(week, code) {
+              if (!week || !this.takenByWeek[week]) return false;
+              return this.takenByWeek[week].includes(code);
+            }
+          }"
+        >
           @php
             $name = trim(($participant->first_name ?? '').' '.($participant->last_name ?? ''));
           @endphp
@@ -99,6 +109,7 @@
                 name="week_number"
                 class="w-full"
                 required
+                x-model="selectedWeek"
               >
                 <option value="">Select week…</option>
                 @foreach ($weeks as $week)
@@ -134,6 +145,7 @@
                 @foreach ($laneOptions as $code => $label)
                   <option
                     value="{{ $code }}"
+                    x-show="!isLaneTaken(selectedWeek, '{{ $code }}')"
                     @selected(old('lane_code') === $code)
                   >
                     {{ $label }}

@@ -1,115 +1,219 @@
 {{-- resources/views/public/cls/scoring-summary.blade.php --}}
+@php
+  $isEvent = ($kind === 'event');
+
+  // Title: event title or league title/name
+  $title = $isEvent
+      ? ($owner->title ?? 'Event')
+      : ($owner->title ?? $owner->name ?? 'League');
+
+  // Participant (both EventScore and LeagueWeekScore have a participant relationship)
+  $participant = $score->participant ?? null;
+  $archerName = null;
+
+  if ($participant) {
+      $first = $participant->first_name ?? '';
+      $last  = $participant->last_name ?? '';
+      $archerName = trim($first . ' ' . $last) ?: null;
+  }
+
+  // Scoring config from snapshot (both models have these columns now)
+  $arrowsPerEnd = (int) ($score->arrows_per_end ?? 3);
+  $endsPlanned  = (int) ($score->ends_planned ?? ($score->ends?->count() ?? 10));
+  $xValue       = $score->x_value ?? null;
+  $maxScore     = (int) ($score->max_score ?? 10);
+
+  $endsCollection = $score->ends ?? collect();
+
+  // Build display rows similar to CLS record component
+  $displayEnds   = [];
+  $completedEnds = 0;
+  $totalScore    = 0;
+  $totalX        = 0;
+
+  $xVal = $xValue !== null ? (int) $xValue : null;
+
+  foreach ($endsCollection as $endModel) {
+      $endNumber = (int) $endModel->end_number;
+      $scores    = $endModel->scores ?? [];
+
+      $rowScores = [];
+      $sum       = 0;
+      $xCount    = 0;
+      $hasAny    = false;
+
+      for ($i = 0; $i < $arrowsPerEnd; $i++) {
+          $v = $scores[$i] ?? null;
+          $rowScores[$i] = $v;
+
+          if ($v !== null) {
+              $hasAny = true;
+              $sum   += (int) $v;
+
+              if ($xVal !== null && (int) $v === $xVal) {
+                  $xCount++;
+              }
+          }
+      }
+
+      if ($hasAny) {
+          $completedEnds++;
+      }
+
+      $totalScore += $sum;
+      $totalX     += $xCount;
+
+      $displayEnds[] = [
+          'end_number' => $endNumber,
+          'scores'     => $rowScores,
+          'total'      => $sum,
+          'x_count'    => $xCount,
+          'has_any'    => $hasAny,
+      ];
+  }
+
+  usort($displayEnds, static fn (array $a, array $b) => $a['end_number'] <=> $b['end_number']);
+@endphp
+
 <x-layouts.public :league="null">
-  @php
-    /** @var \App\Models\EventScore|null $score */
-    $score       = $score ?? null;
-    $event       = $score?->event ?? null;
-    $participant = $score?->participant ?? null;
+  <section class="w-full mb-5">
+    {{-- Header --}}
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div class="sm:flex sm:items-center sm:justify-between">
+        <div class="sm:flex-auto">
+          <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            {{ $isEvent ? 'Event scoring summary' : 'League scoring summary' }}
+          </h1>
 
-    $name = $participant
-      ? trim(($participant->first_name ?? '').' '.($participant->last_name ?? ''))
-      : null;
-  @endphp
+          <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
+            {{ $title }}
+            @if ($archerName)
+              • Archer: {{ $archerName }}
+            @endif
+            <br>
+            {{ $arrowsPerEnd }} arrows/end • up to {{ $maxScore }} points/arrow
+            @if(($xValue ?? 0) > $maxScore)
+              (X={{ $xValue }})
+            @endif
+          </p>
+        </div>
 
-  <section class="w-full">
-    <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-      <h1 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-        Scoring summary
-      </h1>
-
-      <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-400">
-        This is the summary of your scores for this event session.
-      </p>
-
-      <div class="mt-4 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-        <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-          @if ($event)
-            <div>
-              <dt class="text-zinc-500 dark:text-zinc-400">Event</dt>
-              <dd class="font-medium text-zinc-900 dark:text-zinc-100">
-                {{ $event->title }}
-              </dd>
-            </div>
-          @endif
-
-          @if ($name)
-            <div>
-              <dt class="text-zinc-500 dark:text-zinc-400">Archer</dt>
-              <dd class="font-medium text-zinc-900 dark:text-zinc-100">
-                {{ $name }}
-              </dd>
-            </div>
-          @endif
-
-          <div>
-            <dt class="text-zinc-500 dark:text-zinc-400">Ends</dt>
-            <dd class="font-medium text-zinc-900 dark:text-zinc-100">
-              {{ $score?->ends_planned ?? '—' }}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="text-zinc-500 dark:text-zinc-400">Total score</dt>
-            <dd class="font-medium text-zinc-900 dark:text-zinc-100">
-              {{ $score?->total_score ?? 0 }}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="text-zinc-500 dark:text-zinc-400">X / bonus count</dt>
-            <dd class="font-medium text-zinc-900 dark:text-zinc-100">
-              {{ $score?->x_count ?? 0 }}
-            </dd>
-          </div>
-        </dl>
-      </div>
-
-      @if ($score)
-        <div class="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-zinc-200 dark:divide-zinc-700">
-              <thead class="bg-zinc-50 dark:bg-zinc-900/60">
-                <tr>
-                  <th class="px-4 py-2 text-left text-xs font-semibold text-zinc-500 uppercase tracking-wide">
-                    End
-                  </th>
-                  <th class="px-4 py-2 text-right text-xs font-semibold text-zinc-500 uppercase tracking-wide">
-                    Score
-                  </th>
-                  <th class="px-4 py-2 text-right text-xs font-semibold text-zinc-500 uppercase tracking-wide">
-                    X / bonus
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
-                @foreach ($score->ends()->orderBy('end_number')->get() as $end)
-                  <tr class="bg-white dark:bg-zinc-950/60">
-                    <td class="whitespace-nowrap px-4 py-2 text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                      {{ $end->end_number }}
-                    </td>
-                    <td class="whitespace-nowrap px-4 py-2 text-right text-sm text-zinc-900 dark:text-zinc-100">
-                      {{ $end->end_score }}
-                    </td>
-                    <td class="whitespace-nowrap px-4 py-2 text-right text-sm text-zinc-900 dark:text-zinc-100">
-                      {{ $end->x_count }}
-                    </td>
-                  </tr>
-                @endforeach
-              </tbody>
-            </table>
-          </div>
-
-          <div class="flex items-center justify-end border-t border-zinc-200 px-4 py-3 text-sm dark:border-zinc-800">
+        <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
+          @if ($isEvent)
             <a
-              href="{{ route('public.cls.participants', [$kind, $owner->public_uuid]) }}"
+              href="{{ route('public.cls.participants', ['kind' => 'event', 'uuid' => $owner->public_uuid]) }}"
               class="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
-              Back to check-in
+              Back to event check-in
             </a>
-          </div>
+          @else
+            <a
+              href="{{ route('public.cls.participants', ['kind' => 'league', 'uuid' => $owner->public_uuid]) }}"
+              class="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Back to league check-in
+            </a>
+          @endif
         </div>
-      @endif
+      </div>
+    </div>
+
+    {{-- Score table --}}
+    <div class="mt-8">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div class="overflow-hidden rounded-xl border border-zinc-200 shadow-sm dark:border-zinc-700">
+          <table class="w-full text-left">
+            <thead class="bg-white dark:bg-zinc-900">
+              <tr>
+                <th class="py-3.5 pl-4 pr-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  End
+                </th>
+                <th class="px-3 py-3.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Arrows
+                </th>
+                <th class="px-3 py-3.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100 w-24">
+                  End&nbsp;Total
+                </th>
+                <th class="px-3 py-3.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100 w-20">
+                  X
+                </th>
+              </tr>
+            </thead>
+
+            <tbody class="divide-y divide-zinc-100 dark:divide-white/10">
+              @foreach ($displayEnds as $row)
+                @php
+                  $endNumber = $row['end_number'];
+                  $scores    = $row['scores'] ?? [];
+                  $endTotal  = $row['total'] ?? 0;
+                  $endX      = $row['x_count'] ?? 0;
+                @endphp
+
+                <tr>
+                  <td class="py-4 pl-4 pr-3 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {{ $endNumber }}
+                  </td>
+                  <td class="px-3 py-3">
+                    <div
+                      class="grid gap-2"
+                      style="grid-template-columns: repeat({{ $arrowsPerEnd }}, minmax(0,1fr));"
+                    >
+                      @for ($i = 0; $i < $arrowsPerEnd; $i++)
+                        @php
+                          $rawVal = $scores[$i] ?? null;
+
+                          if ($rawVal === null) {
+                              $cellLabel = null;
+                          } elseif ((int)$rawVal === 0) {
+                              $cellLabel = 'M';
+                          } elseif ($xValue !== null && (int)$rawVal === (int)$xValue) {
+                              $cellLabel = 'X';
+                          } else {
+                              $cellLabel = $rawVal;
+                          }
+                        @endphp
+
+                        <div
+                          class="h-10 rounded-lg inset-ring inset-ring-zinc-300 dark:inset-ring-zinc-700 flex items-center justify-center text-sm"
+                        >
+                          @if ($cellLabel === null)
+                            <span class="opacity-40">·</span>
+                          @else
+                            {{ $cellLabel }}
+                          @endif
+                        </div>
+                      @endfor
+                    </div>
+                  </td>
+                  <td class="px-3 py-3 text-sm tabular-nums text-zinc-900 dark:text-zinc-100">
+                    {{ $endTotal }}
+                  </td>
+                  <td class="px-3 py-3 text-sm tabular-nums text-zinc-900 dark:text-zinc-100">
+                    {{ $endX }}
+                  </td>
+                </tr>
+              @endforeach
+            </tbody>
+
+            <tfoot class="bg-zinc-50/60 dark:bg-white/5">
+              <tr>
+                <th class="py-3.5 pl-4 pr-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Totals
+                </th>
+                <td class="px-3 py-3 text-sm text-zinc-700 dark:text-zinc-400">
+                  Ends completed: {{ $completedEnds }} / {{ $endsPlanned }}
+                </td>
+                <td class="px-3 py-3 text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+                  {{ $totalScore }}
+                </td>
+                <td class="px-3 py-3 text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+                  {{ $totalX }}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
     </div>
   </section>
 </x-layouts.public>
