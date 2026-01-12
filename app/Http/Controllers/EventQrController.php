@@ -11,7 +11,10 @@ class EventQrController extends Controller
     {
         Gate::authorize('view', $event);
 
-        $url = route('public.event.checkin.participants', ['uuid' => $event->public_uuid]);
+        $url = route('public.cls.participants', [
+            'kind' => 'event',
+            'uuid' => $event->public_uuid,
+        ]);
 
         $svg = \QrCode::format('svg')->size(600)->margin(1)->errorCorrection('M')->generate($url);
 

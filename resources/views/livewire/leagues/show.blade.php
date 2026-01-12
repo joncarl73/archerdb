@@ -14,7 +14,10 @@ new class extends Component
     {
         Gate::authorize('view', $league);
         $this->league = $league->load(['weeks' => fn ($q) => $q->orderBy('week_number')]);
-        $this->checkinUrl = route('public.checkin.participants', ['uuid' => $this->league->public_uuid]);
+        $this->checkinUrl = route('public.cls.participants', [
+            'kind' => 'league',
+            'uuid' => $this->league->public_uuid,
+        ]);
     }
 
     public function getCheckinsByWeekProperty(): array

@@ -25,7 +25,10 @@ new class extends Component
         $this->event = $event->load(['lineTimes' => fn ($q) => $q->orderBy('line_date')->orderBy('start_time')]);
 
         // Public check-in URL for events
-        $this->checkinUrl = route('public.event.checkin.participants', ['uuid' => $this->event->public_uuid]);
+        $this->checkinUrl = route('public.cls.participants', [
+            'kind' => 'event',
+            'uuid' => $this->event->public_uuid,
+        ]);
 
         // ---- Aggregate participant counts per line time (assigned / preferred)
         $lineTimeIds = $this->event->lineTimes->pluck('id')->all();

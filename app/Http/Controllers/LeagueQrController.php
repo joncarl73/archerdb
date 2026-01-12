@@ -13,7 +13,10 @@ class LeagueQrController extends Controller
     {
         Gate::authorize('view', $league);
 
-        $url = route('public.checkin.participants', ['uuid' => $league->public_uuid]);
+        $url = route('public.cls.participants', [
+            'kind' => 'league',
+            'uuid' => $league->public_uuid,
+        ]);
 
         // Generate SVG QR (vector, no Imagick), then base64 encode for DomPDF
         $svg = QrCode::format('svg')

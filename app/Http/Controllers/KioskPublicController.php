@@ -2,233 +2,224 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Event;             // League kiosk
+use App\Models\Event;
 use App\Models\EventCheckin;
 use App\Models\EventKioskSession;
-use App\Models\EventLineTime;
 use App\Models\KioskSession;
 use App\Models\League;
-use App\Models\LeagueCheckin;                    // Event support
-use App\Models\LeagueParticipant;
+use App\Models\LeagueCheckin;
 use App\Models\LeagueWeek;
-use App\Models\LeagueWeekScore;
-use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\View\View;
 
 class KioskPublicController extends Controller
 {
     /**
-     * League helper: Is the given league week scheduled for "today"?
+     * Shared public kiosk landing board: /k/{token}
+     *
+     * - If the token belongs to a League KioskSession, show the league kiosk board.
+     * - Otherwise, if it belongs to an EventKioskSession, show the event kiosk board.
      */
-    private function isTodayWeek(League $league, LeagueWeek $week): bool
+    public function landing(string $token)
     {
-        $tz = config('app.timezone');
-        $today = Carbon::now($tz)->toDateString();
-        $weekDate = Carbon::parse($week->date, $tz)->toDateString();
-
-        return $weekDate === $today;
-    }
-
-    /**
-     * Event helper: Is the given event line time scheduled for "today"?
-     * Adjust 'starts_at' to your column name if different (e.g., 'start_at' or 'date').
-     */
-    private function isTodayLineTime(Event $event, EventLineTime $line): bool
-    {
-        $tz = config('app.timezone');
-        $today = Carbon::now($tz)->toDateString();
-
-        // If you store only a date, change to ->toDateString() on that date column directly.
-        $lineDate = Carbon::parse($line->starts_at ?? $line->start_at ?? $line->date, $tz)->toDateString();
-
-        return $lineDate === $today;
-    }
-
-    /**
-     * /k/{token} — kiosk landing (league OR event)
-     */
-    public function landing(Request $request, string $token): RedirectResponse|View
-    {
-        // Try league kiosk (back-compat) first
-        $leagueSession = KioskSession::where('token', $token)
+        // 1) Try league kiosk session first
+        $session = KioskSession::query()
+            ->with('league')
+            ->where('token', $token)
             ->where('is_active', true)
             ->first();
 
-        if ($leagueSession) {
-            $league = $leagueSession->league;
+        if ($session) {
+            /** @var League $league */
+            $league = $session->league;
 
-            $week = LeagueWeek::where('league_id', $league->id)
-                ->where('week_number', $leagueSession->week_number)
-                ->firstOrFail();
-
-            $participantIds = is_array($leagueSession->participants)
-                ? $leagueSession->participants
-                : (json_decode((string) $leagueSession->participants, true) ?: []);
-            $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
-
-            $checkins = LeagueCheckin::with('participant')
-                ->where('league_id', $league->id)
-                ->where('week_number', $leagueSession->week_number)
-                ->when(count($participantIds) > 0, fn ($q) => $q->whereIn('participant_id', $participantIds))
-                ->orderBy('lane_number')->orderBy('lane_slot')
-                ->get();
-
-            $assignedNames = [];
-            if (count($participantIds)) {
-                $assignedNames = LeagueParticipant::where('league_id', $league->id)
-                    ->whereIn('id', $participantIds)
-                    ->orderBy('last_name')->orderBy('first_name')
-                    ->get(['first_name', 'last_name'])
-                    ->map(fn ($p) => trim(($p->first_name ?? '').' '.($p->last_name ?? '')))
-                    ->all();
+            if (! $league) {
+                abort(404);
             }
 
-            // Stamp kiosk flags used by PublicScoringController
-            $request->session()->put('kiosk_mode', true);
-            $request->session()->put('kiosk_return_to', url()->current());
+            // The kiosk session is bound to a specific week_number
+            $week = LeagueWeek::query()
+                ->where('league_id', $league->id)
+                ->where('week_number', $session->week_number)
+                ->firstOrFail();
+
+            // Normalize participants array from the session
+            $participantIds = is_array($session->participants)
+                ? $session->participants
+                : (json_decode((string) $session->participants, true) ?: []);
+
+            $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
+
+            // Pull all check-ins for these participants for that week
+            $checkins = LeagueCheckin::query()
+                ->where('league_id', $league->id)
+                ->where('week_number', $week->week_number)
+                ->when(! empty($participantIds), fn ($q) => $q->whereIn('participant_id', $participantIds))
+                ->orderBy('lane_number')
+                ->orderBy('lane_slot')
+                ->get();
 
             return view('public.kiosk.landing', [
-                'mode' => 'league',
-                'session' => $leagueSession,
                 'league' => $league,
                 'week' => $week,
+                'session' => $session,
                 'checkins' => $checkins,
-                'assignedNames' => $assignedNames,
             ]);
         }
 
-        // Otherwise, try event kiosk
-        $eventSession = EventKioskSession::where('token', $token)
+        // 2) Fall back to event kiosk session
+        $session = EventKioskSession::query()
+            ->with(['event', 'lineTime'])
+            ->where('token', $token)
             ->where('is_active', true)
-            ->first();
+            ->firstOrFail();
 
-        if (! $eventSession) {
-            return redirect()->route('home')
-                ->with('toast', ['type' => 'warning', 'message' => 'That kiosk session has ended.']);
+        /** @var Event $event */
+        $event = $session->event;
+
+        if (! $event) {
+            abort(404);
         }
 
-        $event = $eventSession->event;
-        $line = $eventSession->lineTime;
+        $lineTime = $session->lineTime;
 
-        $participantIds = is_array($eventSession->participants)
-            ? $eventSession->participants
-            : (json_decode((string) $eventSession->participants, true) ?: []);
+        // Normalize participants from kiosk session
+        $participantIds = is_array($session->participants)
+            ? $session->participants
+            : (json_decode((string) $session->participants, true) ?: []);
+
         $participantIds = array_values(array_unique(array_map('intval', $participantIds)));
 
-        // Pull event check-ins *for that line time* and limited to assigned participants
-        $checkins = EventCheckin::query()
-            ->where('event_id', $event->id)
-            ->where('event_line_time_id', $eventSession->event_line_time_id)
-            ->when(count($participantIds) > 0, fn ($q) => $q->whereIn('participant_id', $participantIds))
-            ->orderBy('lane')->orderBy('slot')
+        $checkinsQuery = EventCheckin::query()
+            ->where('event_id', $event->id);
+
+        if ($session->event_line_time_id) {
+            $checkinsQuery->where('event_line_time_id', $session->event_line_time_id);
+        }
+
+        if (! empty($participantIds)) {
+            $checkinsQuery->whereIn('participant_id', $participantIds);
+        }
+
+        // Use lane_number / lane_slot (matches EventCheckin model)
+        $checkins = $checkinsQuery
+            ->orderBy('lane_number')
+            ->orderBy('lane_slot')
             ->get();
 
-        // For events, use names straight from check-ins (no extra query required)
-        $assignedNames = $checkins->map(fn ($c) => (string) ($c->participant_name ?? ''))->filter()->values()->all();
-
-        // Stamp kiosk flags for Event PD/kiosk flow
-        $request->session()->put('kiosk_mode', true);
-        $request->session()->put('kiosk_return_to', url()->current());
-
-        return view('public.kiosk.landing', [
-            'mode' => 'event',
-            'session' => $eventSession,
+        return view('public.kiosk.event-landing', [
             'event' => $event,
-            'lineTime' => $line,
+            'lineTime' => $lineTime,
+            'session' => $session,
             'checkins' => $checkins,
-            'assignedNames' => $assignedNames,
         ]);
     }
 
     /**
-     * /k/{token}/score/{checkin}
-     * - League: unchanged behavior (kept exactly as you had it).
-     * - Event : mirrors the logic — kiosk only if the check-in belongs to the same line time as the session AND that line time is today.
-     *           Otherwise clear kiosk flags and fall back to personal-device flow.
+     * When an archer taps their name on the kiosk board:
+     *   /k/{token}/score/{checkin}
+     *
+     * For leagues:
+     *   - validate kiosk session + LeagueCheckin
+     *   - set CLS kiosk flags + league check-in
+     *   - hand off to CLS startScoring(kind='league')
+     *
+     * For events:
+     *   - validate EventKioskSession + EventCheckin
+     *   - set CLS kiosk flags
+     *   - hand off to CLS startScoring(kind='event')
      */
     public function score(Request $request, string $token, int $checkinId): RedirectResponse
     {
-        // Try league first
-        $leagueSession = KioskSession::where('token', $token)
+        // 1) Try as a LEAGUE kiosk session
+        $session = KioskSession::query()
+            ->with('league')
+            ->where('token', $token)
             ->where('is_active', true)
             ->first();
 
-        if ($leagueSession) {
-            // LEAGUE FLOW (unchanged)
-            $checkin = LeagueCheckin::with('participant')->findOrFail($checkinId);
-            $league = League::findOrFail($checkin->league_id);
+        if ($session) {
+            /** @var League $league */
+            $league = $session->league;
 
-            $checkinWeek = LeagueWeek::where('league_id', $league->id)
-                ->where('week_number', $checkin->week_number)
-                ->firstOrFail();
-
-            $score = LeagueWeekScore::firstOrCreate(
-                [
-                    'league_id' => $league->id,
-                    'league_week_id' => $checkinWeek->id,
-                    'league_participant_id' => $checkin->participant_id,
-                ],
-                [
-                    'arrows_per_end' => (int) ($league->arrows_per_end ?? 3),
-                    'ends_planned' => (int) ($league->ends_per_day ?? 10),
-                    'max_score' => 10,
-                    'x_value' => (int) ($league->x_ring_value ?? 10),
-                ]
-            );
-
-            $allowKiosk = false;
-            if ($leagueSession->league_id === $league->id) {
-                $sessionWeek = LeagueWeek::where('league_id', $league->id)
-                    ->where('week_number', $leagueSession->week_number)
-                    ->first();
-
-                if ($sessionWeek && $checkinWeek->id === $sessionWeek->id && $this->isTodayWeek($league, $sessionWeek)) {
-                    $allowKiosk = true;
-                }
+            if (! $league) {
+                abort(404);
             }
 
-            if ($allowKiosk) {
-                $request->session()->put('kiosk_mode', true);
-                $request->session()->put('kiosk_return_to', route('kiosk.landing', ['token' => $token]));
-            } else {
-                $request->session()->forget('kiosk_mode');
-                $request->session()->forget('kiosk_return_to');
+            $checkin = LeagueCheckin::query()->findOrFail($checkinId);
+
+            if ($checkin->league_id !== $league->id || (int) $checkin->week_number !== (int) $session->week_number) {
+                abort(404);
             }
 
-            return redirect()->route('public.scoring.record', [$league->public_uuid, $score->id]);
+            // Optional: ensure participant is part of kiosk session
+            $allowedIds = is_array($session->participants)
+                ? $session->participants
+                : (json_decode((string) $session->participants, true) ?: []);
+            $allowedIds = array_map('intval', $allowedIds);
+
+            if (! empty($allowedIds) && ! in_array((int) $checkin->participant_id, $allowedIds, true)) {
+                abort(403, 'Participant is not part of this kiosk session.');
+            }
+
+            // Mark this as a CLS kiosk flow and store the league check-in
+            $request->session()->put('cls_from_kiosk', true);
+            $request->session()->put('cls_league_checkin_id', $checkin->id);
+            $request->session()->put('kiosk_mode', true);
+            $request->session()->put('kiosk_return_to', route('kiosk.landing', ['token' => $token]));
+
+            // Hand off to CLS scoring start for LEAGUE
+            return redirect()->route('public.cls.scoring.start', [
+                'kind' => 'league',
+                'uuid' => $league->public_uuid,
+                'participant' => $checkin->participant_id,
+            ]);
         }
 
-        // EVENT FLOW
-        $eventSession = EventKioskSession::where('token', $token)
+        // 2) Otherwise treat as an EVENT kiosk session
+        $eSession = EventKioskSession::query()
+            ->with('event')
+            ->where('token', $token)
             ->where('is_active', true)
             ->firstOrFail();
 
-        $checkin = EventCheckin::findOrFail($checkinId);
-        $event = Event::findOrFail($checkin->event_id);
-        $line = EventLineTime::where('event_id', $event->id)->findOrFail($checkin->event_line_time_id);
+        /** @var Event $event */
+        $event = $eSession->event;
 
-        // Kiosk allowed only if the same line time AND that line time is today
-        $allowKiosk = (
-            (int) $eventSession->event_id === (int) $event->id
-            && (int) $eventSession->event_line_time_id === (int) $line->id
-            && $this->isTodayLineTime($event, $line)
-        );
-
-        if ($allowKiosk) {
-            $request->session()->put('kiosk_mode', true);
-            $request->session()->put('kiosk_return_to', route('kiosk.landing', ['token' => $token]));
-        } else {
-            $request->session()->forget('kiosk_mode');
-            $request->session()->forget('kiosk_return_to');
+        if (! $event) {
+            abort(404);
         }
 
-        // Hand off to the Event PD/kiosk entry point (creates/fetches the event score)
-        // Route name from earlier steps: public.event.scoring.start (uuid, checkin)
-        return redirect()->route('public.event.scoring.start', [
+        $checkin = EventCheckin::query()->findOrFail($checkinId);
+
+        if ($checkin->event_id !== $event->id) {
+            abort(404);
+        }
+
+        if ($eSession->event_line_time_id && (int) $checkin->event_line_time_id !== (int) $eSession->event_line_time_id) {
+            abort(404);
+        }
+
+        // Optional: ensure participant is part of this kiosk session
+        $allowedIds = is_array($eSession->participants)
+            ? $eSession->participants
+            : (json_decode((string) $eSession->participants, true) ?: []);
+        $allowedIds = array_map('intval', $allowedIds);
+
+        if (! empty($allowedIds) && ! in_array((int) $checkin->participant_id, $allowedIds, true)) {
+            abort(403, 'Participant is not part of this kiosk session.');
+        }
+
+        // Mark this as a CLS kiosk flow for events
+        $request->session()->put('cls_from_kiosk', true);
+        $request->session()->put('kiosk_mode', true);
+        $request->session()->put('kiosk_return_to', route('kiosk.landing', ['token' => $token]));
+
+        // Hand off to CLS scoring start for EVENT
+        return redirect()->route('public.cls.scoring.start', [
+            'kind' => 'event',
             'uuid' => $event->public_uuid,
-            'checkin' => $checkinId,
+            'participant' => $checkin->participant_id,
         ]);
     }
 }

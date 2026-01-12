@@ -28,11 +28,11 @@ new class extends Component
     public array $showAdd = [];
 
     // derived for UI
-    public array $lineTimes = [];          // [{id, starts_at, label}]
+    public array $lineTimes = [];           // [{id, starts_at, label}]
 
     public array $participantsForLine = []; // available (checked-in but not assigned) archers for selected line
 
-    public $sessions;                      // list to render
+    public $sessions;                       // list to render
 
     // QR modal
     public bool $showQr = false;
@@ -63,14 +63,20 @@ new class extends Component
     {
         Gate::authorize('manageKiosks', $event);
 
-        $this->event = $event->load(['lineTimes' => fn ($q) => $q->orderBy('starts_at')]);
+        // Order by database columns, NOT the accessor
+        $this->event = $event->load([
+            'lineTimes' => fn ($q) => $q
+                ->orderBy('line_date')
+                ->orderBy('start_time'),
+        ]);
 
-        // build line time options
+        // Build line time options using the accessor for display only
         $this->lineTimes = $this->event->lineTimes->map(function ($lt) {
             return [
                 'id' => (int) $lt->id,
-                'starts_at' => $lt->starts_at,
-                'label' => \Illuminate\Support\Carbon::parse($lt->starts_at)->format('Y-m-d H:i'),
+                'starts_at' => $lt->starts_at, // accessor is fine here
+                'label' => \Illuminate\Support\Carbon::parse($lt->starts_at)
+                    ->format('Y-m-d H:i'),
             ];
         })->values()->all();
 
@@ -88,6 +94,7 @@ new class extends Component
         if (is_array($val)) {
             return array_values(array_unique(array_map('intval', $val)));
         }
+
         $arr = json_decode((string) $val, true) ?: [];
 
         return array_values(array_unique(array_map('intval', $arr)));
@@ -124,17 +131,24 @@ new class extends Component
 
         $alreadyAssigned = $this->assignedParticipantIdsForLine($this->line_time_id);
 
+        // NOTE: event_checkins now uses lane_number / lane_slot
         $checkins = EventCheckin::query()
             ->where('event_id', $this->event->id)
             ->where('event_line_time_id', $this->line_time_id)
             ->when(! empty($alreadyAssigned), fn ($q) => $q->whereNotIn('participant_id', $alreadyAssigned))
-            ->orderBy('lane')->orderBy('slot')
-            ->get(['participant_id', 'participant_name', 'lane', 'slot']);
+            ->orderBy('lane_number')
+            ->orderBy('lane_slot')
+            ->get([
+                'participant_id',
+                'participant_name',
+                'lane_number',
+                'lane_slot',
+            ]);
 
         $this->participantsForLine = $checkins->map(function ($c) {
-            $lane = (string) ($c->lane ?? '');
-            if ($lane !== '' && $c->slot && $c->slot !== 'single') {
-                $lane .= $c->slot;
+            $lane = (string) ($c->lane_number ?? '');
+            if ($lane !== '' && $c->lane_slot && $c->lane_slot !== 'single') {
+                $lane .= $c->lane_slot;
             }
 
             return [
@@ -168,7 +182,8 @@ new class extends Component
         }
 
         $exists = EventLineTime::where('event_id', $this->event->id)
-            ->where('id', $this->line_time_id)->exists();
+            ->where('id', $this->line_time_id)
+            ->exists();
 
         if (! $exists) {
             $this->addError('line_time_id', 'Selected line time does not belong to this event.');
@@ -207,6 +222,7 @@ new class extends Component
         // validate line-time
         $line = EventLineTime::where('event_id', $this->event->id)
             ->find($this->line_time_id);
+
         if (! $line) {
             $this->addError('line_time_id', 'Selected line time does not exist for this event.');
 
@@ -218,6 +234,7 @@ new class extends Component
             $this->assignedParticipantIdsForLine((int) $this->line_time_id),
             array_map('intval', $this->participantIds)
         );
+
         if (! empty($dupes)) {
             $this->addError('participantIds', 'One or more selected archers were already assigned. Please refresh.');
             $this->refreshParticipantsForLine();
@@ -306,6 +323,7 @@ new class extends Component
         // race check across kiosks for this line time
         $alreadyAssigned = $this->assignedParticipantIdsForLine((int) $s->event_line_time_id);
         $dupes = array_values(array_intersect($alreadyAssigned, $sel));
+
         if (! empty($dupes)) {
             $this->addError("sessionAdd.$sessionId", 'One or more selected archers are already assigned to a kiosk. Refresh and try again.');
             $this->refreshParticipantsForLine();
@@ -496,7 +514,7 @@ new class extends Component
                             @php($url = url('/k/'.$s->token))
                             @php($ids = is_array($s->participants) ? $s->participants : (json_decode((string)$s->participants, true) ?: []))
                             @php($rows = \App\Models\EventParticipant::where('event_id', $event->id)->whereIn('id', $ids)->get(['id','first_name','last_name'])->keyBy('id'))
-                            @php($checkins = \App\Models\EventCheckin::where('event_id', $event->id)->where('event_line_time_id', $s->event_line_time_id)->whereIn('participant_id', $ids)->get(['participant_id','lane','slot'])->keyBy('participant_id'))
+                            @php($checkins = \App\Models\EventCheckin::where('event_id', $event->id)->where('event_line_time_id', $s->event_line_time_id)->whereIn('participant_id', $ids)->get(['participant_id','lane_number','lane_slot'])->keyBy('participant_id'))
                             @php($lt = \App\Models\EventLineTime::find($s->event_line_time_id))
                             <tr>
                                 <td class="px-3 py-3.5 text-sm text-gray-800 dark:text-gray-200">
@@ -512,9 +530,9 @@ new class extends Component
                                                 @php($c = $checkins->get($pid))
                                                 @php($lane = null)
                                                 @if($c)
-                                                    @php($lane = (string) ($c->lane ?? ''))
-                                                    @if($lane !== '' && $c->slot && $c->slot !== 'single')
-                                                        @php($lane .= $c->slot)
+                                                    @php($lane = (string) ($c->lane_number ?? ''))
+                                                    @if($lane !== '' && $c->lane_slot && $c->lane_slot !== 'single')
+                                                        @php($lane .= $c->lane_slot)
                                                     @endif
                                                     @php($lane = $lane !== '' ? $lane : null)
                                                 @endif
@@ -553,7 +571,7 @@ new class extends Component
                                             type="button"
                                             wire:click="openQr('{{ $s->token }}')"
                                             class="rounded-md bg-white px-3 py-1.5 text-xs font-medium inset-ring inset-ring-gray-300 hover:bg-gray-50
-                                                   dark:bg-white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10"
+                                                   dark:bg:white/5 dark:text-gray-200 dark:inset-ring-white/10 dark:hover:bg-white/10"
                                             title="Show QR"
                                         >
                                             QR

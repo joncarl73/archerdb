@@ -418,8 +418,11 @@ class PublicClsController extends Controller
             $participantModel = $event->participants()->findOrFail($participant);
 
             // If this event is configured for tablet/kiosk scoring,
-            // do NOT show the scoring UI on the archer's device.
-            if ($event->scoring_mode === Event::SCORING_TABLET) {
+            // do NOT show the scoring UI on the archer's *own* device.
+            // But if we’re coming from a kiosk, bypass this.
+            $isFromKiosk = (bool) $request->session()->pull('cls_from_kiosk', false);
+
+            if ($event->scoring_mode === Event::SCORING_TABLET && ! $isFromKiosk) {
                 $name = trim(($participantModel->first_name ?? '').' '.($participantModel->last_name ?? ''));
 
                 return view('public.cls.wait-for-tablet', [
@@ -491,8 +494,11 @@ class PublicClsController extends Controller
                 ? $league->scoring_mode
                 : ($league->scoring_mode->value ?? $league->scoring_mode);
 
-            // If this league is tablet/kiosk mode, tell the archer they'll receive a tablet.
-            if ($mode !== 'personal_device') {
+            // If this league is tablet/kiosk mode, tell the archer they'll receive a tablet
+            // on their *own* device. Kiosk-origin flows bypass this.
+            $isFromKiosk = (bool) $request->session()->pull('cls_from_kiosk', false);
+
+            if ($mode !== 'personal_device' && ! $isFromKiosk) {
                 $name = trim(($participantModel->first_name ?? '').' '.($participantModel->last_name ?? ''));
 
                 return view('public.cls.wait-for-tablet', [
@@ -603,14 +609,20 @@ class PublicClsController extends Controller
                 abort(404, 'CLS-E3');
             }
 
-            $kioskMode = ($owner->scoring_mode === Event::SCORING_TABLET);
+            // Prefer kiosk flags from session if present
+            $session = request()->session();
+            $sessionKioskMode = $session->get('kiosk_mode');
+            $sessionKioskReturnTo = $session->get('kiosk_return_to');
+
+            $kioskMode = $sessionKioskMode ?? ($owner->scoring_mode === Event::SCORING_TABLET);
+            $kioskReturnTo = $sessionKioskReturnTo ?? null;
 
             return view('public.cls.scoring-record', [
                 'kind' => $kind,
                 'owner' => $owner,
                 'score' => $scoreModel,
                 'kioskMode' => $kioskMode,
-                'kioskReturnTo' => null, // we’ll wire this when we unify kiosk boards
+                'kioskReturnTo' => $kioskReturnTo,
             ]);
         }
 
@@ -631,8 +643,13 @@ class PublicClsController extends Controller
                 ? $owner->scoring_mode
                 : ($owner->scoring_mode->value ?? $owner->scoring_mode);
 
-            $kioskMode = ($mode !== 'personal_device');
-            $kioskReturnTo = null; // can be wired to a CLS league/kiosk board later
+            // Prefer kiosk flags from session if present (e.g., kiosk board flow)
+            $session = request()->session();
+            $sessionKioskMode = $session->get('kiosk_mode');
+            $sessionKioskReturnTo = $session->get('kiosk_return_to');
+
+            $kioskMode = $sessionKioskMode ?? ($mode !== 'personal_device');
+            $kioskReturnTo = $sessionKioskReturnTo ?? null;
 
             // Re-use the existing league scoring view + Livewire component.
             return view('public.cls.scoring-record', [
@@ -643,6 +660,7 @@ class PublicClsController extends Controller
                 'kioskMode' => $kioskMode,
                 'kioskReturnTo' => $kioskReturnTo,
             ]);
+
         }
 
         abort(404);

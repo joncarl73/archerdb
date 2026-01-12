@@ -44,7 +44,7 @@ class Record extends Component
     public $showSeparateXButton = false;
 
     /**
-     * Keypad scoring values (e.g. [10, 9, 8, ..., 0]).
+     * Keypad scoring values (e.g. [10, 9, 8, ..., 1]).
      *
      * @var array<int,int|string>
      */
@@ -85,7 +85,9 @@ class Record extends Component
             abort(404, 'CLS-UNKNOWN-KIND');
         }
 
-        // Default keypad values based on maxScore if not already set
+        // Default keypad values based on maxScore if not already set.
+        // (getKeypadKeysProperty will ensure we never show a numeric 0 key;
+        // zero is always entered via "M".)
         if (empty($this->keypadValues)) {
             $max = $this->maxScore ?: 10;
             $this->keypadValues = range($max, 0);
@@ -102,7 +104,7 @@ class Record extends Component
     protected function mountEventScore(int $scoreId, string $uuid): void
     {
         $score = EventScore::query()
-            ->with(['event', 'participant', 'ends'])
+            ->with(['event.ruleset', 'event.rulesetOverrides', 'participant', 'ends'])
             ->findOrFail($scoreId);
 
         /** @var Event $event */
@@ -123,20 +125,36 @@ class Record extends Component
             $this->archerName = $name ?: null;
         }
 
-        // Scoring config from snapshot
+        // Scoring config from snapshot on the score row
         $this->arrowsPerEnd = (int) ($score->arrows_per_end ?? 3);
         $this->endsPlanned = (int) ($score->ends_planned ?? 10);
         $this->scoringSystem = (string) ($score->scoring_system ?? '10');
         $this->xValue = $score->x_value;
         $this->maxScore = (int) ($score->max_score ?? 10);
 
-        // Determine keypad scoring values from snapshot or fallback.
-        $values = $score->scoring_values ?? null;
+        //
+        // Determine keypad scoring values:
+        //
+        //   1. Prefer the event's ruleset (+ overrides) → this is the *authoritative*
+        //      scoring scale for events.
+        //   2. If missing, fall back to the snapshot on event_scores.scoring_values.
+        //   3. If still missing, fall back to a simple max..1 scale.
+        //
+        $ruleset = $event->ruleset;
+        $overrides = $event->rulesetOverrides?->schema ?? [];
+
+        $values = $overrides['scoring_values'] ?? $ruleset?->scoring_values ?? null;
 
         if (! is_array($values) || empty($values)) {
-            // Fallback: WA-style max/max-1/.../0
+            // Secondary source: per-score snapshot (if you ever stamp it).
+            $values = $score->scoring_values ?? null;
+        }
+
+        if (! is_array($values) || empty($values)) {
+            // Final fallback: ruleset-style max..1.
+            // Zero is entered via "M", not a numeric key.
             $max = $this->maxScore ?: 10;
-            $values = range($max, 0);
+            $values = range($max, 1);
         }
 
         // Normalize to distinct ints in descending order.
@@ -145,20 +163,22 @@ class Record extends Component
 
         $this->keypadValues = $values;
 
-        // Decide if we should show a separate "X" button.
-        $this->showSeparateXButton = false;
+        // EVENTS: show a separate X button whenever the snapshot/ruleset
+        // provides an x_value. X will map to that value in mapKeyToPoints().
+        $this->showSeparateXButton = ($this->xValue !== null);
 
-        if ($this->scoringSystem === '10' && $this->xValue !== null) {
-            $max = $this->maxScore ?: max($values);
-            $expected = range($max, 0);
-            $valsSorted = $values;
-            sort($expected);
-            sort($valsSorted);
-
-            if ($valsSorted === $expected && (int) $this->xValue === (int) $max) {
-                $this->showSeparateXButton = true;
-            }
-        }
+        // DEBUG LOG (optional – comment out when done)
+        \Log::debug('CLS EVENT DEBUG', [
+            'event_id' => $event->id,
+            'event_title' => $event->title,
+            'score_id' => $score->id,
+            'xValue' => $this->xValue,
+            'maxScore' => $this->maxScore,
+            'raw_scoring_values_snapshot' => $score->scoring_values ?? null,
+            'ruleset_scoring_values' => $ruleset?->scoring_values ?? null,
+            'override_scoring_values' => $overrides['scoring_values'] ?? null,
+            'final_values_after_precedence' => $values,
+        ]);
 
         // Build local buffer from existing ends.
         $buffer = [];
@@ -222,15 +242,18 @@ class Record extends Component
         $this->xValue = $score->x_value;
         $this->maxScore = (int) ($score->max_score ?? 10);
 
-        // League does not have scoring_values on the score row;
-        // we just build a simple 10..0 + X style keypad.
+        // League keypad: X is separate (x_value from league),
+        // numbers are max..1, and "M" represents 0.
         $max = $this->maxScore ?: 10;
-        $values = range($max, 0);
+
+        // Numeric keys only: max → 1; we skip 0 here because "M" will be 0.
+        $values = range($max, 1);
 
         $this->keypadValues = $values;
 
-        // If x_value equals max, we’ll show a separate X key.
-        $this->showSeparateXButton = ($this->xValue !== null && (int) $this->xValue === (int) $max);
+        // For leagues, always show an X key when an x_value is configured.
+        // That X will resolve to either 10 or 11 based on league setup.
+        $this->showSeparateXButton = ($this->xValue !== null);
 
         // Build buffer from league_week_ends (scores JSON only).
         $buffer = [];
@@ -270,16 +293,23 @@ class Record extends Component
         //
         $keys = [];
 
-        // Optional X button (when configured)
+        // Optional X button (when configured).
         if ($this->showSeparateXButton) {
             $keys[] = 'X';
         }
 
         foreach ($this->keypadValues as $v) {
-            $keys[] = (string) $v;
+            $int = (int) $v;
+
+            // Never show a numeric "0" key — zero is always entered as "M".
+            if ($int === 0) {
+                continue;
+            }
+
+            $keys[] = (string) $int;
         }
 
-        // Always include M (miss) at the end
+        // Always include M (miss) at the end; this maps to 0 points.
         $keys[] = 'M';
 
         return $keys;
