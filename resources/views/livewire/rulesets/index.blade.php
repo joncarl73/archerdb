@@ -5,6 +5,7 @@ use App\Models\Division;
 use App\Models\Ruleset;
 use App\Models\RulesetClass;
 use App\Models\TargetFace;
+use App\Support\RulesetPresets;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Volt\Component;
 
@@ -37,9 +38,14 @@ new class extends Component
 
     public $L_classes;
 
+    // Presets dropdown options (key => label)
+    public array $presetOptions = [];
+
     // -----------------------
-    // CREATE fields (slug removed)
+    // CREATE fields
     // -----------------------
+    public string $c_preset_key = 'world_archery_target'; // default preset
+
     public ?string $c_org = null;
 
     public string $c_name = '';
@@ -56,7 +62,7 @@ new class extends Component
 
     public array $c_selected_classes = [];
 
-    public array $c_schema = [];                 // future detailed scoring JSON
+    public array $c_schema = []; // future detailed scoring JSON
 
     public string $c_scoring_csv = '1,2,3,4,5,6,7,8,9,10';
 
@@ -69,14 +75,16 @@ new class extends Component
 
     public int $c_arrows_per_end = 3;
 
-    public string $c_lane_breakdown = 'single';  // single|AB|ABCD|ABCDEF
+    public string $c_lane_breakdown = 'single'; // single|AB|ABCD|ABCDEF
 
     public int $c_lanes_count = 10;
 
     // -----------------------
-    // EDIT fields (slug removed)
+    // EDIT fields
     // -----------------------
     public ?int $editingId = null;
+
+    public string $e_preset_key = 'custom'; // loaded from ruleset.preset_key (or custom)
 
     public ?string $e_org = null;
 
@@ -116,6 +124,11 @@ new class extends Component
     public function mount(): void
     {
         $this->loadLookups();
+
+        // Build presets dropdown options (key => label)
+        $this->presetOptions = collect(RulesetPresets::all())
+            ->mapWithKeys(fn ($p, $k) => [$k => $p['label']])
+            ->toArray();
     }
 
     private function loadLookups(): void
@@ -158,6 +171,69 @@ new class extends Component
     }
 
     // -----------------------
+    // Preset apply helpers
+    // -----------------------
+    private function applyPresetToCreate(string $key): void
+    {
+        $p = RulesetPresets::get($key);
+
+        // Custom = user-managed fields; do not overwrite anything
+        if (! $p || $key === 'custom') {
+            return;
+        }
+
+        $this->c_org = $p['org'] ?? $this->c_org;
+
+        if (! empty($p['scoring_csv'])) {
+            $this->c_scoring_csv = $p['scoring_csv'];
+        }
+
+        if (! is_null($p['x_value'] ?? null)) {
+            $this->c_x_value = (int) $p['x_value'];
+        }
+
+        if (! empty($p['distances_csv'])) {
+            $this->c_distances_csv = $p['distances_csv'];
+        }
+    }
+
+    private function applyPresetToEdit(string $key): void
+    {
+        $p = RulesetPresets::get($key);
+
+        // Custom = user-managed fields; do not overwrite anything
+        if (! $p || $key === 'custom') {
+            return;
+        }
+
+        $this->e_org = $p['org'] ?? $this->e_org;
+
+        if (! empty($p['scoring_csv'])) {
+            $this->e_scoring_csv = $p['scoring_csv'];
+        }
+
+        if (! is_null($p['x_value'] ?? null)) {
+            $this->e_x_value = (int) $p['x_value'];
+        }
+
+        if (! empty($p['distances_csv'])) {
+            $this->e_distances_csv = $p['distances_csv'];
+        }
+    }
+
+    public function updatedCPresetKey(): void
+    {
+        $this->resetErrorBag();
+        $this->applyPresetToCreate($this->c_preset_key);
+    }
+
+    public function updatedEPresetKey(): void
+    {
+        $this->resetErrorBag();
+        $this->applyPresetToEdit($this->e_preset_key);
+    }
+
+    // -----------------------
     // Helpers
     // -----------------------
     private function normalizeScoringCsv(?string $csv): array
@@ -165,6 +241,7 @@ new class extends Component
         if (! $csv) {
             return [];
         }
+
         $vals = array_filter(array_map('trim', explode(',', $csv)), fn ($v) => $v !== '');
         $ints = array_values(array_unique(array_map('intval', $vals)));
         sort($ints, SORT_NUMERIC);
@@ -178,8 +255,10 @@ new class extends Component
         if (! $csv) {
             return [];
         }
+
         $vals = array_filter(array_map('trim', explode(',', $csv)), fn ($v) => $v !== '');
         $nums = [];
+
         foreach ($vals as $v) {
             $v = preg_replace('/\s*m\s*$/i', '', $v);
             if ($v === '' || ! is_numeric($v)) {
@@ -187,6 +266,7 @@ new class extends Component
             }
             $nums[] = (int) round((float) $v);
         }
+
         $nums = array_values(array_unique($nums));
         sort($nums, SORT_NUMERIC);
 
@@ -198,12 +278,15 @@ new class extends Component
         if (is_null($x)) {
             return true;
         }
+
         if (empty($scale)) {
             $this->addError($field, 'Provide a scoring scale first.');
 
             return false;
         }
+
         $max = max($scale);
+
         if (! in_array($x, $scale, true) && $x !== $max + 1) {
             $this->addError($field, 'X value must be in the scale or exactly one more than the max (e.g., 11 for 1–10).');
 
@@ -222,6 +305,8 @@ new class extends Component
         $this->resetErrorBag();
 
         // Reset all create-state fields
+        $this->c_preset_key = 'world_archery_target';
+
         $this->c_org = null;
         $this->c_name = '';
         $this->c_description = null;
@@ -236,6 +321,9 @@ new class extends Component
         $this->c_scoring_csv = '1,2,3,4,5,6,7,8,9,10';
         $this->c_x_value = 10;
         $this->c_distances_csv = '18,50,60';
+
+        // Apply defaults for the chosen preset (so dropdown + fields match)
+        $this->applyPresetToCreate($this->c_preset_key);
 
         $this->c_ends_per_session = 10;
         $this->c_arrows_per_end = 3;
@@ -271,16 +359,19 @@ new class extends Component
         ]);
 
         $scale = $this->normalizeScoringCsv($this->c_scoring_csv);
+
         if (empty($scale)) {
             $this->addError('c_scoring_csv', 'Enter a comma-separated list of integers.');
 
             return;
         }
+
         if (! $this->validateXAgainstScale($this->c_x_value, $scale, 'c_x_value')) {
             return;
         }
 
         $distances = $this->normalizeDistancesCsv($this->c_distances_csv);
+
         if (empty($distances)) {
             $this->addError('c_distances_csv', 'Enter one or more distances in meters (e.g., 18,50,60).');
 
@@ -289,6 +380,10 @@ new class extends Component
 
         $r = Ruleset::create([
             'company_id' => auth()->user()->company_id,
+
+            // NOTE: requires rulesets.preset_key + fillable('preset_key')
+            'preset_key' => $this->c_preset_key === 'custom' ? null : $this->c_preset_key,
+
             'org' => $this->c_org,
             'name' => $this->c_name,
             'description' => $this->c_description,
@@ -328,6 +423,9 @@ new class extends Component
         Gate::authorize('update', $r);
 
         $this->editingId = $r->id;
+
+        // NOTE: requires rulesets.preset_key column; if absent, this will always be custom
+        $this->e_preset_key = $r->preset_key ?? 'custom';
 
         $this->e_org = $r->org;
         $this->e_name = $r->name;
@@ -387,16 +485,19 @@ new class extends Component
         ]);
 
         $scale = $this->normalizeScoringCsv($this->e_scoring_csv);
+
         if (empty($scale)) {
             $this->addError('e_scoring_csv', 'Enter a comma-separated list of integers.');
 
             return;
         }
+
         if (! $this->validateXAgainstScale($this->e_x_value, $scale, 'e_x_value')) {
             return;
         }
 
         $distances = $this->normalizeDistancesCsv($this->e_distances_csv);
+
         if (empty($distances)) {
             $this->addError('e_distances_csv', 'Enter one or more distances in meters (e.g., 18,50,60).');
 
@@ -404,6 +505,9 @@ new class extends Component
         }
 
         $r->update([
+            // NOTE: requires rulesets.preset_key + fillable('preset_key')
+            'preset_key' => $this->e_preset_key === 'custom' ? null : $this->e_preset_key,
+
             'org' => $this->e_org,
             'name' => $this->e_name,
             'description' => $this->e_description,
@@ -442,6 +546,7 @@ new class extends Component
     }
 };
 ?>
+
 <div class="mx-auto max-w-7xl relative">
   {{-- Header --}}
   <div class="sm:flex sm:items-center">
@@ -570,11 +675,23 @@ new class extends Component
             <flux:label>Org (optional)</flux:label>
             <flux:input wire:model.defer="c_org" />
           </div>
-          <div class="md:col-span-2">
+
+          <div>
+            <flux:label>Default scoring type</flux:label>
+            <flux:select wire:model.live="c_preset_key">
+              @foreach($presetOptions as $k => $label)
+                <option value="{{ $k }}">{{ $label }}</option>
+              @endforeach
+            </flux:select>
+            <flux:text class="text-xs text-gray-500">Selecting a preset can auto-fill scoring, X, and distances.</flux:text>
+          </div>
+
+          <div>
             <flux:label>Name</flux:label>
             <flux:input wire:model.defer="c_name" />
             @error('c_name')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
+
           <div class="md:col-span-3">
             <flux:label>Description (optional)</flux:label>
             <flux:textarea rows="2" wire:model.defer="c_description" />
@@ -754,11 +871,23 @@ new class extends Component
             <flux:label>Org (optional)</flux:label>
             <flux:input wire:model.defer="e_org" />
           </div>
-          <div class="md:col-span-2">
+
+          <div>
+            <flux:label>Default scoring type</flux:label>
+            <flux:select wire:model.live="e_preset_key">
+              @foreach($presetOptions as $k => $label)
+                <option value="{{ $k }}">{{ $label }}</option>
+              @endforeach
+            </flux:select>
+            <flux:text class="text-xs text-gray-500">Selecting a preset can auto-fill scoring, X, and distances.</flux:text>
+          </div>
+
+          <div>
             <flux:label>Name</flux:label>
             <flux:input wire:model.defer="e_name" />
             @error('e_name')<flux:text class="text-red-500 text-sm">{{ $message }}</flux:text>@enderror
           </div>
+
           <div class="md:col-span-3">
             <flux:label>Description (optional)</flux:label>
             <flux:textarea rows="2" wire:model.defer="e_description" />

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Ruleset extends Model
 {
     protected $fillable = [
-        'company_id', 'org', 'name', 'description', 'schema', 'scoring_values', 'x_value', 'distances_m', 'ends_per_session', 'arrows_per_end', 'lane_breakdown', 'lane_count',
+        'company_id', 'org', 'preset_key', 'name', 'description', 'schema', 'scoring_values', 'x_value', 'distances_m', 'ends_per_session', 'arrows_per_end', 'lane_breakdown', 'lane_count',
     ];
 
     protected $casts = [
