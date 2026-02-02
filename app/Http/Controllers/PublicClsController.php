@@ -257,16 +257,30 @@ class PublicClsController extends Controller
                 ->orderBy('week_number')
                 ->get();
 
-            // Use League::laneOptions() so we respect lane_breakdown
-            $rawOptions = $league->laneOptions();
-            $laneOptions = [];
+            // Build lane options from the selected Range (via model helper).
+            // IMPORTANT: Range slots are configurable; do not assume A-D.
+            $rawOptions = match ($kind) {
+                'league' => $league->laneOptions(),
+                'event' => $event->laneOptions(),
+                default => [],
+            };
 
-            foreach ($rawOptions as $code => $label) {
-                // Normalize to "Lane 1 (A)" style when there is a slot letter
-                if (preg_match('/^(\d+)([A-D])$/', $code, $m)) {
-                    $laneOptions[$code] = 'Lane '.$m[1].' ('.$m[2].')';
+            // Normalize into: [ '1A' => 'Lane 1 A', ... ]
+            $options = [];
+            foreach ($rawOptions as $code) {
+                $code = strtoupper(trim((string) $code));
+                if ($code === '') {
+                    continue;
+                }
+
+                // Accept: "12A", "3AC", "7LEFT", "5SINGLE", etc.
+                if (preg_match('/^(\d+)([A-Z0-9]+)?$/', $code, $m)) {
+                    $laneNum = $m[1];
+                    $slot = $m[2] ?? 'SINGLE';
+                    $options[$code] = "Lane {$laneNum} {$slot}";
                 } else {
-                    $laneOptions[$code] = $label; // e.g. "Lane 1" for single lanes
+                    // fallback label
+                    $options[$code] = $code;
                 }
             }
 

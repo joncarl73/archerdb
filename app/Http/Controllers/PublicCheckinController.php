@@ -287,20 +287,30 @@ class PublicCheckinController extends Controller
     /**
      * Determine lane slots allowed by the event’s rules.
      */
-    protected function deriveSlotsFromEvent(Event $event): array
+    private function deriveSlotsFromEvent(\App\Models\Event $event): array
     {
-        if (method_exists($event, 'effectiveRules')) {
-            $schema = $event->effectiveRules();
-            $mode = data_get($schema, 'lane_breakdown', 'single');
-        } else {
-            $schema = $event->ruleset?->schema ?? [];
-            $mode = data_get($schema, 'lane_breakdown', 'single');
+        // Range-first: derive from the configured lane_slot_groups
+        $event->loadMissing('range');
+
+        if ($event->range) {
+            $groups = $event->range->laneSlotGroups();
+            $slots = [];
+
+            foreach ($groups as $g) {
+                foreach ((array) $g as $s) {
+                    $s = strtoupper(trim((string) $s));
+                    if ($s !== '') {
+                        $slots[] = $s;
+                    }
+                }
+            }
+
+            $slots = array_values(array_unique($slots));
+
+            return $slots ?: ['SINGLE'];
         }
 
-        return match ($mode) {
-            'ab' => ['A', 'B'],
-            'abcd' => ['A', 'B', 'C', 'D'],
-            default => ['A'],
-        };
+        // Safe fallback for older events with no range selected yet
+        return ['SINGLE'];
     }
 }

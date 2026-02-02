@@ -1,5 +1,6 @@
 <?php
 use App\Models\League;
+use App\Models\Range;
 use App\Services\LeagueScheduler;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -44,7 +45,10 @@ new class extends Component
 
     public bool $is_published = false;
 
-    // Lanes
+    // NEW: Range selection
+    public ?int $range_id = null;
+
+    // Legacy lanes (fallback only when no range selected)
     public int $lanes_count = 10;              // 1..100
 
     public string $lane_breakdown = 'single';  // single|ab|abcd
@@ -91,6 +95,20 @@ new class extends Component
         $this->nextPage($this->pageName);
     }
 
+    public function with(): array
+    {
+        $companyId = Auth::user()?->company_id;
+
+        $ranges = Range::query()
+            ->where('company_id', $companyId)
+            ->orderBy('name')
+            ->get(['id', 'name', 'bales_count', 'lanes_per_bale', 'lane_slot_groups']);
+
+        return [
+            'rangesList' => $ranges,
+        ];
+    }
+
     // ---- Core query: "mine OR I collaborate on"
     protected function baseLeaguesQuery()
     {
@@ -110,7 +128,10 @@ new class extends Component
             ->pluck('league_id');
 
         return League::query()
-            ->with(['owner:id,name'])   // <— added
+            ->with([
+                'owner:id,name',
+                'range:id,company_id,name,bales_count,lanes_per_bale,lane_slot_groups',
+            ])
             ->when(
                 $isCompanyOwner && $companyId,
                 fn ($q) => $q->where('company_id', $companyId),
@@ -158,15 +179,9 @@ new class extends Component
         return compact('current', 'last', 'start', 'end');
     }
 
-    // helpers
     private function positionsPerLane(string $mode): int
     {
         return $mode === 'ab' ? 2 : ($mode === 'abcd' ? 4 : 1);
-    }
-
-    private function totalPositions(int $lanes, string $mode): int
-    {
-        return max(0, $lanes) * $this->positionsPerLane($mode);
     }
 
     // sheet openers
@@ -179,30 +194,42 @@ new class extends Component
 
     public function openEdit(int $id): void
     {
-        // Only true owners/company owner/admin can edit settings
         $league = League::findOrFail($id);
         Gate::authorize('update', $league);
 
         $this->editingId = $league->id;
+
         $this->title = $league->title;
         $this->location = $league->location;
+
         $this->length_weeks = (int) $league->length_weeks;
         $this->day_of_week = (int) $league->day_of_week;
         $this->start_date = optional($league->start_date)->toDateString();
+
         $this->type = $league->type->value ?? (string) $league->type;
         $this->is_published = (bool) $league->is_published;
 
-        // lanes
+        // NEW: range
+        $this->range_id = $league->range_id ? (int) $league->range_id : null;
+
+        // legacy lanes fallback
         $this->lanes_count = (int) ($league->lanes_count ?? 10);
         $this->lane_breakdown = $league->lane_breakdown_value ?? 'single';
+
+        // scoring
         $this->ends_per_day = (int) ($league->ends_per_day ?? 10);
         $this->arrows_per_end = (int) ($league->arrows_per_end ?? 3);
 
-        // scoring settings
         $this->x_ring_value = (int) ($league->x_ring_value->value ?? $league->x_ring_value ?? 10);
         $this->scoring_mode = (string) ($league->scoring_mode->value ?? $league->scoring_mode ?? 'personal_device');
 
         $this->showSheet = true;
+    }
+
+    public function updatedRangeId($value): void
+    {
+        // When a range is selected, keep legacy fields as-is but they become irrelevant.
+        // If you want to auto-default them, you can do it here, but we’ll keep it non-destructive.
     }
 
     // create/update
@@ -217,9 +244,12 @@ new class extends Component
             'type' => ['required', 'in:open,closed'],
             'is_published' => ['boolean'],
 
-            // lanes
-            'lanes_count' => ['required', 'integer', 'between:1,100'],
-            'lane_breakdown' => ['required', 'in:single,ab,abcd'],
+            // NEW: range
+            'range_id' => ['nullable', 'integer', 'exists:ranges,id'],
+
+            // legacy fallback (only required when no range)
+            'lanes_count' => ['required_without:range_id', 'integer', 'between:1,100'],
+            'lane_breakdown' => ['required_without:range_id', 'in:single,ab,abcd'],
 
             // scoring defaults
             'ends_per_day' => ['required', 'integer', 'between:1,60'],
@@ -229,6 +259,20 @@ new class extends Component
             'x_ring_value' => ['required', 'integer', 'in:10,11'],
             'scoring_mode' => ['required', 'in:personal_device,tablet'],
         ]);
+
+        // enforce company ownership on selected range
+        if ($this->range_id) {
+            $ok = Range::query()
+                ->where('id', $this->range_id)
+                ->where('company_id', Auth::user()?->company_id)
+                ->exists();
+
+            if (! $ok) {
+                $this->addError('range_id', 'Invalid range selection.');
+
+                return;
+            }
+        }
 
         if ($this->editingId) {
             $league = League::findOrFail($this->editingId);
@@ -243,8 +287,13 @@ new class extends Component
                 'type' => $this->type,
                 'is_published' => $this->is_published,
 
+                // NEW
+                'range_id' => $this->range_id,
+
+                // legacy fallback
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
+
                 'ends_per_day' => $this->ends_per_day,
                 'arrows_per_end' => $this->arrows_per_end,
 
@@ -252,7 +301,6 @@ new class extends Component
                 'scoring_mode' => $this->scoring_mode,
             ]);
 
-            // refresh weeks on edit
             $scheduler->buildWeeks($league);
         } else {
             $league = League::create([
@@ -266,10 +314,13 @@ new class extends Component
                 'type' => $this->type,
                 'is_published' => $this->is_published,
 
+                // NEW
+                'range_id' => $this->range_id,
+
+                // legacy fallback
                 'lanes_count' => $this->lanes_count,
                 'lane_breakdown' => $this->lane_breakdown,
 
-                // defaults on create
                 'ends_per_day' => $this->ends_per_day,
                 'arrows_per_end' => $this->arrows_per_end,
 
@@ -277,10 +328,7 @@ new class extends Component
                 'scoring_mode' => $this->scoring_mode,
             ]);
 
-            // creator is per-league OWNER collaborator
             $league->collaborators()->syncWithoutDetaching([Auth::id() => ['role' => 'owner']]);
-
-            // generate weeks on create
             $scheduler->buildWeeks($league);
         }
 
@@ -289,11 +337,10 @@ new class extends Component
         $this->dispatch('toast', type: 'success', message: 'League saved');
     }
 
-    // inline actions
     public function togglePublish(int $id): void
     {
         $league = League::findOrFail($id);
-        Gate::authorize('update', $league); // managers cannot publish/unpublish
+        Gate::authorize('update', $league);
 
         $league->update(['is_published' => ! $league->is_published]);
         $this->dispatch('toast', type: 'success', message: $league->is_published ? 'Published' : 'Unpublished');
@@ -302,7 +349,7 @@ new class extends Component
     public function delete(int $id): void
     {
         $league = League::findOrFail($id);
-        Gate::authorize('delete', $league); // managers cannot delete
+        Gate::authorize('delete', $league);
 
         $league->delete();
         $this->dispatch('toast', type: 'success', message: 'League deleted');
@@ -311,15 +358,21 @@ new class extends Component
     protected function resetForm(): void
     {
         $this->editingId = null;
+
         $this->title = '';
         $this->location = null;
+
         $this->length_weeks = 10;
         $this->day_of_week = 3;
         $this->start_date = null;
+
         $this->type = 'open';
         $this->is_published = false;
 
-        // lanes
+        // NEW
+        $this->range_id = null;
+
+        // legacy fallback
         $this->lanes_count = 10;
         $this->lane_breakdown = 'single';
 
@@ -345,14 +398,12 @@ new class extends Component
                 </p>
             </div>
             <div class="mt-4 sm:mt-0 sm:ml-16 sm:flex-none">
-                <button wire:click="openCreate"
-                        class="block rounded-md bg-indigo-600 px-3 py-2 text-center text-sm font-semibold text-white shadow-xs
-                               hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600
-                               dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:outline-indigo-500">
+                <flux:button variant="primary" color="indigo" icon="plus" wire:click="openCreate">
                     New league
-                </button>
+                </flux:button>
             </div>
         </div>
+
         <div class="mt-4 max-w-md">
             <flux:input icon="magnifying-glass" placeholder="Search by title or location…" wire:model.live.debounce.300ms="search" />
         </div>
@@ -369,24 +420,30 @@ new class extends Component
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Type</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Starts</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Weeks</th>
-                            {{-- Lanes/Capacity --}}
-                            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">Lanes</th>
+                            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 lg:table-cell dark:text-white">Range / Capacity</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Ends × Arrows</th>
-                            {{-- Scoring --}}
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Scoring</th>
                             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 md:table-cell dark:text-white">Status</th>
                             <th class="py-3.5 pl-3 pr-4"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
+
                     <tbody class="divide-y divide-gray-100 dark:divide-white/10">
                         @forelse($this->leagues as $lg)
                             @php
+                                $range = $lg->range ?? null;
+
                                 $mode  = $lg->lane_breakdown_value;
                                 $per   = $mode === 'ab' ? 2 : ($mode === 'abcd' ? 4 : 1);
-                                $cap   = max(0, (int)($lg->lanes_count ?? 0)) * $per;
+
+                                $cap = $range
+                                    ? $range->positionsCount()
+                                    : (max(0, (int)($lg->lanes_count ?? 0)) * $per);
+
                                 $xVal  = (int)($lg->x_ring_value->value ?? $lg->x_ring_value ?? 10);
                                 $sMode = (string)($lg->scoring_mode->value ?? $lg->scoring_mode ?? 'personal_device');
                             @endphp
+
                             <tr>
                                 <td class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 dark:text-white">
                                     <a href="{{ route('corporate.leagues.show', $lg->id) }}"
@@ -399,23 +456,31 @@ new class extends Component
                                         </span>
                                     </div>
                                 </td>
+
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 sm:table-cell dark:text-gray-400">
                                     {{ ucfirst($lg->type->value ?? $lg->type) }}
                                 </td>
+
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     {{ optional($lg->start_date)->format('Y-m-d') ?: '—' }}
                                 </td>
+
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     {{ $lg->length_weeks }} wk
                                 </td>
 
-                                {{-- Lanes and capacity --}}
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 lg:table-cell dark:text-gray-400">
-                                    {{ (int)($lg->lanes_count ?? 0) }} lanes •
-                                    @if($mode === 'ab') A/B
-                                    @elseif($mode === 'abcd') A/B/C/D
-                                    @else single @endif
-                                    <span class="ml-1 text-xs opacity-70">({{ $cap }} positions)</span>
+                                    @if($range)
+                                        {{ $range->name }}
+                                        <span class="ml-1 text-xs opacity-70">({{ $cap }} positions)</span>
+                                    @else
+                                        <span class="opacity-80">Legacy:</span>
+                                        {{ (int)($lg->lanes_count ?? 0) }} lanes •
+                                        @if($mode === 'ab') A/B
+                                        @elseif($mode === 'abcd') A/B/C/D
+                                        @else single @endif
+                                        <span class="ml-1 text-xs opacity-70">({{ $cap }} positions)</span>
+                                    @endif
                                 </td>
 
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
@@ -423,7 +488,6 @@ new class extends Component
                                     <span class="text-xs opacity-70">({{ $lg->ends_per_day * $lg->arrows_per_end }} total)</span>
                                 </td>
 
-                                {{-- Scoring summary --}}
                                 <td class="hidden px-3 py-4 text-sm text-gray-500 md:table-cell dark:text-gray-400">
                                     X={{ $xVal }} • {{ $sMode === 'tablet' ? 'Tablet' : 'Personal' }}
                                 </td>
@@ -440,11 +504,9 @@ new class extends Component
                                     @endif
                                 </td>
 
-                                {{-- Actions: only for owners/company owner/Admin --}}
                                 <td class="py-4 pl-3 pr-4 text-right text-sm font-medium">
                                     <div class="inline-flex items-center gap-1.5">
                                         @can('update', $lg)
-                                            {{-- NEW: Collaborators / Share --}}
                                             <flux:button
                                                 as="a"
                                                 href="{{ route('corporate.leagues.access', $lg) }}"
@@ -456,7 +518,6 @@ new class extends Component
                                                 <span class="sr-only">Manage collaborators for {{ $lg->title }}</span>
                                             </flux:button>
 
-                                            {{-- Edit settings --}}
                                             <flux:button
                                                 variant="ghost"
                                                 size="xs"
@@ -467,7 +528,6 @@ new class extends Component
                                                 <span class="sr-only">Edit {{ $lg->title }}</span>
                                             </flux:button>
 
-                                            {{-- Publish toggle --}}
                                             <flux:button
                                                 variant="ghost"
                                                 size="xs"
@@ -480,7 +540,6 @@ new class extends Component
                                         @endcan
 
                                         @can('delete', $lg)
-                                            {{-- Delete --}}
                                             <flux:button
                                                 variant="ghost"
                                                 size="xs"
@@ -510,8 +569,14 @@ new class extends Component
                 @php($w = $this->pageWindow)
                 <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 dark:border-white/10 dark:bg-transparent">
                     <div class="flex flex-1 justify-between sm:hidden">
-                        <button wire:click="prevPage" @disabled($p->onFirstPage()) class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Previous</button>
-                        <button wire:click="nextPage" @disabled(!$p->hasMorePages()) class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">Next</button>
+                        <button wire:click="prevPage" @disabled($p->onFirstPage())
+                                class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">
+                            Previous
+                        </button>
+                        <button wire:click="nextPage" @disabled(!$p->hasMorePages())
+                                class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">
+                            Next
+                        </button>
                     </div>
 
                     <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
@@ -524,7 +589,9 @@ new class extends Component
                         </div>
                         <div>
                             <nav aria-label="Pagination" class="isolate inline-flex -space-x-px rounded-md shadow-xs dark:shadow-none">
-                                <button wire:click="prevPage" class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled($p->onFirstPage())>
+                                <button wire:click="prevPage"
+                                        class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                        @disabled($p->onFirstPage())>
                                     <span class="sr-only">Previous</span>
                                     <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5"><path d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
                                 </button>
@@ -533,11 +600,16 @@ new class extends Component
                                     @if ($i === $w['current'])
                                         <span aria-current="page" class="relative z-10 inline-flex items-center bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 dark:bg-indigo-500">{{ $i }}</span>
                                     @else
-                                        <button wire:click="goto({{ $i }})" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">{{ $i }}</button>
+                                        <button wire:click="goto({{ $i }})"
+                                                class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:text-gray-200 dark:inset-ring-gray-700 dark:hover:bg-white/5">
+                                            {{ $i }}
+                                        </button>
                                     @endif
                                 @endfor
 
-                                <button wire:click="nextPage" class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:inset-ring-gray-700 dark:hover:bg-white/5" @disabled(!$p->hasMorePages())>
+                                <button wire:click="nextPage"
+                                        class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 inset-ring inset-ring-gray-300 hover:bg-gray-50 focus:z-20 dark:inset-ring-gray-700 dark:hover:bg-white/5"
+                                        @disabled(!$p->hasMorePages())>
                                     <span class="sr-only">Next</span>
                                     <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="size-5"><path d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
                                 </button>
@@ -576,6 +648,25 @@ new class extends Component
                         </div>
                     </div>
 
+                    {{-- NEW: Range --}}
+                    <div class="grid gap-4 md:grid-cols-2">
+                        <div class="md:col-span-2">
+                            <flux:label for="range_id">Range</flux:label>
+                            <flux:select id="range_id" wire:model="range_id" class="w-full">
+                                <option value="">— No range selected (legacy lanes) —</option>
+                                @foreach($rangesList as $r)
+                                    @php($pos = $r->positionsCount())
+                                    <option value="{{ $r->id }}">{{ $r->name }} ({{ $pos }} positions)</option>
+                                @endforeach
+                            </flux:select>
+                            @error('range_id') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+
+                            <p class="text-xs opacity-70 mt-1">
+                                If a range is selected, lanes/capacity are derived from the range layout.
+                            </p>
+                        </div>
+                    </div>
+
                     <div class="grid gap-4 md:grid-cols-3">
                         <div>
                             <flux:label for="length_weeks"># Weeks</flux:label>
@@ -602,26 +693,30 @@ new class extends Component
                         </div>
                     </div>
 
-                    {{-- Lanes config --}}
-                    <div class="grid gap-4 md:grid-cols-3">
-                        <div>
-                            <flux:label for="lanes_count"># Lanes</flux:label>
-                            <flux:input id="lanes_count" type="number" min="1" max="100" wire:model="lanes_count" />
-                            @error('lanes_count') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
-                        </div>
-                        <div class="md:col-span-2">
-                            <flux:label for="lane_breakdown">Lane breakdown</flux:label>
-                            <flux:select id="lane_breakdown" wire:model="lane_breakdown" class="w-full">
-                                <option value="single">Single lane (1 per lane)</option>
-                                <option value="ab">A/B split (2 per lane)</option>
-                                <option value="abcd">A/B/C/D split (4 per lane)</option>
-                            </flux:select>
-                            @error('lane_breakdown') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                    {{-- Legacy lanes config (only when no range selected) --}}
+                    <div class="rounded-xl border border-gray-200 p-4 dark:border-zinc-700" x-data="{ hasRange: @entangle('range_id') }" x-show="!hasRange" x-cloak>
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Legacy lane settings</div>
 
-                            <p class="text-xs opacity-70 mt-1">
-                                Total shooting positions:
-                                {{ max(1, (int)$lanes_count) * ( $lane_breakdown === 'single' ? 1 : ($lane_breakdown === 'ab' ? 2 : 4)) }}
-                            </p>
+                        <div class="grid gap-4 md:grid-cols-3">
+                            <div>
+                                <flux:label for="lanes_count"># Lanes</flux:label>
+                                <flux:input id="lanes_count" type="number" min="1" max="100" wire:model="lanes_count" />
+                                @error('lanes_count') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+                            </div>
+                            <div class="md:col-span-2">
+                                <flux:label for="lane_breakdown">Lane breakdown</flux:label>
+                                <flux:select id="lane_breakdown" wire:model="lane_breakdown" class="w-full">
+                                    <option value="single">Single lane (1 per lane)</option>
+                                    <option value="ab">A/B split (2 per lane)</option>
+                                    <option value="abcd">A/B/C/D split (4 per lane)</option>
+                                </flux:select>
+                                @error('lane_breakdown') <flux:text size="sm" class="text-red-500 mt-1">{{ $message }}</flux:text> @enderror
+
+                                <p class="text-xs opacity-70 mt-1">
+                                    Total shooting positions:
+                                    {{ max(1, (int)$lanes_count) * ( $lane_breakdown === 'single' ? 1 : ($lane_breakdown === 'ab' ? 2 : 4)) }}
+                                </p>
+                            </div>
                         </div>
                     </div>
 

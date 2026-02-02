@@ -9,6 +9,7 @@ use App\Models\League;
 use App\Models\LeagueCheckin;
 use App\Models\LeagueWeekEnd;
 use App\Models\LeagueWeekScore;
+use App\Models\Range;
 use App\Models\Ruleset;
 use App\Observers\LeagueCheckinObserver;
 use App\Observers\LeagueWeekEndObserver;
@@ -16,6 +17,7 @@ use App\Observers\LeagueWeekScoreObserver;
 use App\Policies\CompanyPolicy;
 use App\Policies\EventPolicy;
 use App\Policies\LeaguePolicy;
+use App\Policies\RangePolicy;
 use App\Policies\RulesetPolicy;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
@@ -58,11 +60,12 @@ class AppServiceProvider extends ServiceProvider
             return $u && $u->isPro();
         });
 
-        // Policy mapping for League
+        // Policy mapping
         Gate::policy(League::class, LeaguePolicy::class);
         Gate::policy(Company::class, CompanyPolicy::class);
         Gate::policy(Event::class, EventPolicy::class);
         Gate::policy(Ruleset::class, RulesetPolicy::class);
+        Gate::policy(Range::class, RangePolicy::class);
 
         // Observers
         LeagueWeekEnd::observe(LeagueWeekEndObserver::class);

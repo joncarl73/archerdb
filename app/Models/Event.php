@@ -26,24 +26,26 @@ class Event extends Model
         'public_uuid',
         'title',
         'location',
-        'kind',              // EventKind backed enum
+        'kind',
         'starts_on',
         'ends_on',
         'is_published',
 
-        // Parity with leagues:
-        'type',              // 'open' | 'closed'
-        'scoring_mode',      // 'personal_device' | 'tablet'
+        'type',
+        'scoring_mode',
 
         // Rules
         'ruleset_id',
+
+        // Venue layout (Range-owned)
+        'range_id',
     ];
 
     protected $casts = [
         'starts_on' => 'date',
         'ends_on' => 'date',
         'is_published' => 'bool',
-        'kind' => EventKind::class, // backed enum cast (string)
+        'kind' => EventKind::class,
     ];
 
     protected static function booted(): void
@@ -53,25 +55,18 @@ class Event extends Model
                 $model->public_uuid = (string) Str::uuid();
             }
 
-            // Sensible defaults to mirror league creation UX
             $model->type ??= self::TYPE_OPEN;
             $model->scoring_mode ??= self::SCORING_PERSONAL;
-
-            // NOTE: lanes are now Ruleset-owned; do NOT set lane_* here
         });
 
         static::saving(function ($model) {
-            // Type
             if (! in_array($model->type, [self::TYPE_OPEN, self::TYPE_CLOSED], true)) {
                 $model->type = self::TYPE_OPEN;
             }
 
-            // Scoring mode
             if (! in_array($model->scoring_mode, [self::SCORING_PERSONAL, self::SCORING_TABLET], true)) {
                 $model->scoring_mode = self::SCORING_PERSONAL;
             }
-
-            // NOTE: no lane_* normalization here anymore
         });
     }
 
@@ -101,7 +96,6 @@ class Event extends Model
 
     public function collaborators()
     {
-        // Matches league_users style but for events
         return $this->belongsToMany(User::class, 'event_users')
             ->withPivot('role')
             ->withTimestamps();
@@ -115,6 +109,11 @@ class Event extends Model
     public function managers()
     {
         return $this->collaborators()->wherePivot('role', 'manager');
+    }
+
+    public function range()
+    {
+        return $this->belongsTo(Range::class);
     }
 
     // ---------------- Convenience ----------------
@@ -147,32 +146,70 @@ class Event extends Model
     }
 
     /**
-     * Number of shooters per lane based on the linked ruleset's lane_breakdown.
-     * Falls back to 1 if no ruleset or unknown value.
+     * Returns the maximum number of slot labels on any lane in the selected range.
+     * (UI hint only; ranges can have variable group sizes.)
      */
-    public function slotsPerLane(): int
+    public function maxSlotsPerLane(): int
     {
-        $breakdown = $this->ruleset?->lane_breakdown ?: 'single';
+        $range = $this->relationLoaded('range') ? $this->range : null;
 
-        return $breakdown === 'single' ? 1 : mb_strlen($breakdown);
+        if (! $range && $this->range_id) {
+            $range = $this->range()->first();
+        }
+
+        if (! $range) {
+            return 1;
+        }
+
+        $groups = $range->laneSlotGroups();
+        $max = 1;
+
+        foreach ($groups as $g) {
+            $max = max($max, is_array($g) ? count($g) : 1);
+        }
+
+        return max(1, $max);
     }
 
     /**
-     * Suggested capacity for a line time = lanes_count (from ruleset) × slotsPerLane()
-     * Note: the ruleset column name you introduced appears as "lanes_count" in your page;
-     * keep it consistent with your Ruleset model/migration.
+     * Range-first suggested capacity for a line time.
+     * If no range is selected, returns 1 (so existing events won't hard-crash).
      */
     public function suggestedCapacity(): int
     {
-        $lanes = (int) ($this->ruleset?->lanes_count ?? 1);
+        $range = $this->relationLoaded('range') ? $this->range : null;
 
-        return max(1, $lanes * $this->slotsPerLane());
+        if (! $range && $this->range_id) {
+            $range = $this->range()->first();
+        }
+
+        if (! $range) {
+            return 1;
+        }
+
+        return max(1, (int) $range->positionsCount());
     }
 
-    // ---------------- Legacy helpers removed ----------------
-    // laneSlots(), normalizeLaneBreakdown(), and any lane_* fields on Event
-    // have been intentionally removed since lanes now live on Ruleset.
-    // --------------------------------------------------------
+    /**
+     * Range-first lane options for CLS assignment (lane_number + slot label).
+     * Returns array like: ["1A","1C","2B","2D", ...]
+     */
+    public function laneOptions(): array
+    {
+        $range = $this->relationLoaded('range') ? $this->range : null;
+
+        if (! $range && $this->range_id) {
+            $range = $this->range()->first();
+        }
+
+        if (! $range) {
+            return ['1SINGLE'];
+        }
+
+        return $range->laneOptions();
+    }
+
+    // ---------------- Related data ----------------
 
     public function participants()
     {

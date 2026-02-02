@@ -109,6 +109,13 @@
                         wire:navigate
                     >{{ __('Rulesets') }}</flux:navlist.item>
 
+                    <flux:navlist.item
+                        icon="map"
+                        :href="route('corporate.ranges.index')"
+                        :current="request()->routeIs('corporate.ranges.index')"
+                        wire:navigate
+                    >{{ __('Ranges') }}</flux:navlist.item>
+                   
                     @php
                         /** Company owner shortcut for conditional links */
                         $isOwner = $user && $user->company_id && $user->isCompanyOwner($user->company_id);

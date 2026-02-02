@@ -174,7 +174,19 @@
                 <div><span class="font-medium text-neutral-900 dark:text-neutral-100">Ends/day:</span> {{ $league->ends_per_day }}</div>
                 <div><span class="font-medium text-neutral-900 dark:text-neutral-100">Arrows/end:</span> {{ $league->arrows_per_end }}</div>
                 <div><span class="font-medium text-neutral-900 dark:text-neutral-100">X-ring value:</span> {{ $league->x_ring_value }}</div>
-                <div><span class="font-medium text-neutral-900 dark:text-neutral-100">Lanes:</span> {{ $league->lanes_count }} ({{ $league->lane_breakdown }})</div>
+                @if($league->range)
+                    <div>
+                        <span class="font-medium text-neutral-900 dark:text-neutral-100">Range:</span>
+                        {{ $league->range->name }}
+                        <span class="opacity-70">({{ $league->range->positionsCount() }} positions)</span>
+                    </div>
+                @else
+                    <div>
+                        <span class="font-medium text-neutral-900 dark:text-neutral-100">Lanes:</span>
+                        {{ $league->lanes_count }} ({{ $league->lane_breakdown }})
+                    </div>
+                @endif
+
             </div>
         </div>
     </div>

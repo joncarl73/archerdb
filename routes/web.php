@@ -218,6 +218,9 @@ Route::middleware(['auth', 'profile.completed', 'corporate', 'corporate.complete
     ->prefix('corporate')
     ->name('corporate.')
     ->group(function () {
+
+        Volt::route('ranges', 'ranges.index')->name('ranges.index');
+
         // Index + Show
         Volt::route('events', 'events.index')->name('events.index');
 

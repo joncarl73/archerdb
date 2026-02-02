@@ -18,19 +18,8 @@ class KioskManagerController extends Controller
         $weeks = LeagueWeek::where('league_id', $league->id)->orderBy('week_number')->get(['id', 'week_number', 'date']);
         $sessions = KioskSession::where('league_id', $league->id)->latest()->get();
 
-        // Build lane options exactly like your check-in page
-        $letters = $league->lane_breakdown->letters();
-        $positionsPerLane = $league->lane_breakdown->positionsPerLane();
-        $laneOptions = [];
-        for ($i = 1; $i <= (int) $league->lanes_count; $i++) {
-            if ($positionsPerLane === 1) {
-                $laneOptions[] = (string) $i;
-            } else {
-                foreach ($letters as $L) {
-                    $laneOptions[] = $i.$L;
-                }
-            }
-        }
+        // Build lane options (Range-aware)
+        $laneOptions = $league->laneOptions();
 
         return view('manager.kiosk.index', compact('league', 'weeks', 'sessions', 'laneOptions'));
     }

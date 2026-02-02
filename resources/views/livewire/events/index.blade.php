@@ -2,6 +2,7 @@
 use App\Enums\EventKind;
 use App\Models\Event;
 use App\Models\EventLineTime;
+use App\Models\Range;
 use App\Models\Ruleset;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
@@ -40,7 +41,9 @@ new class extends Component
     public string $c_type = 'open';                    // open|closed
 
     public string $c_scoring_mode = 'personal_device'; // personal_device|tablet
-    // REMOVED: lanes on Event
+
+    // ✅ NEW: Range selection
+    public ?int $c_range_id = null;
 
     // edit drawer state + form
     public bool $showEdit = false;
@@ -62,7 +65,12 @@ new class extends Component
     public string $e_type = 'open';
 
     public string $e_scoring_mode = 'personal_device';
-    // REMOVED: lanes on Event
+
+    // ✅ NEW: Range selection
+    public ?int $e_range_id = null;
+
+    /** @var array<int,string> */
+    public array $range_options = [];
 
     // -----------------------
     // Line Times drawer
@@ -102,28 +110,38 @@ new class extends Component
 
     public ?string $rs_selected_description = null;
 
-    // ------------ helpers ------------
-    protected function slotsPerLaneFrom(string $breakdown): int
+    public function mount(): void
     {
-        return match ($breakdown) {
-            'AB' => 2,
-            'ABCD' => 4,
-            'ABCDEF' => 6,
-            default => 1, // 'single' or unknown
-        };
+        // keep options ready for create/edit drawers
+        $this->refreshRangeOptions();
+    }
+
+    protected function refreshRangeOptions(): void
+    {
+        $companyId = (int) auth()->user()->company_id;
+
+        $this->range_options = Range::query()
+            ->where('company_id', $companyId)
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->toArray();
     }
 
     public function with(): array
     {
         $q = Event::query()
             ->where('company_id', auth()->user()->company_id)
+            ->with(['company', 'range']) // ✅ show range info without N+1
             ->when($this->search !== '', fn ($q) => $q->where(function ($w) {
                 $w->where('title', 'like', "%{$this->search}%")
                     ->orWhere('location', 'like', "%{$this->search}%");
             }))
             ->orderBy($this->sort, $this->direction);
 
-        return ['events' => $q->paginate(10)];
+        return [
+            'events' => $q->paginate(10),
+        ];
     }
 
     public function sortBy(string $col): void
@@ -138,6 +156,7 @@ new class extends Component
             $this->sort = $col;
             $this->direction = 'asc';
         }
+
         $this->resetPage($this->pageName);
     }
 
@@ -147,6 +166,7 @@ new class extends Component
     public function openCreate(): void
     {
         Gate::authorize('create', Event::class);
+        $this->refreshRangeOptions();
         $this->resetCreateForm();
         $this->showCreate = true;
     }
@@ -159,6 +179,7 @@ new class extends Component
     protected function resetCreateForm(): void
     {
         $this->resetErrorBag();
+
         $this->c_title = '';
         $this->c_location = null;
         $this->c_kind = EventKind::SingleDay->value;
@@ -168,11 +189,14 @@ new class extends Component
 
         $this->c_type = 'open';
         $this->c_scoring_mode = 'personal_device';
+
+        $this->c_range_id = null;
     }
 
     public function updatedCKind(string $value): void
     {
         $this->resetErrorBag(['c_ends_on']);
+
         if ($value === EventKind::SingleDay->value) {
             $this->c_ends_on = null;
         } else {
@@ -180,6 +204,28 @@ new class extends Component
                 $this->c_ends_on = $this->c_starts_on;
             }
         }
+    }
+
+    protected function validateRangeSelection(?int $rangeId): ?int
+    {
+        if (! $rangeId) {
+            return null;
+        }
+
+        $companyId = (int) auth()->user()->company_id;
+
+        $ok = Range::query()
+            ->whereKey($rangeId)
+            ->where('company_id', $companyId)
+            ->exists();
+
+        if (! $ok) {
+            $this->addError('c_range_id', 'Invalid range selection.');
+
+            return null;
+        }
+
+        return $rangeId;
     }
 
     public function create(): void
@@ -191,6 +237,7 @@ new class extends Component
             'c_ends_on' => ['nullable', 'date'],
             'c_type' => ['required', 'in:open,closed'],
             'c_scoring_mode' => ['required', 'in:personal_device,tablet'],
+            'c_range_id' => ['nullable', 'integer'],
         ], [], [
             'c_title' => 'title',
             'c_kind' => 'kind',
@@ -198,6 +245,7 @@ new class extends Component
             'c_ends_on' => 'ends on',
             'c_type' => 'registration type',
             'c_scoring_mode' => 'scoring mode',
+            'c_range_id' => 'range',
         ]);
 
         if ($this->c_kind === EventKind::SingleDay->value) {
@@ -215,6 +263,11 @@ new class extends Component
             }
         }
 
+        $rangeId = $this->validateRangeSelection($this->c_range_id);
+        if ($this->getErrorBag()->has('c_range_id')) {
+            return;
+        }
+
         $event = Event::create([
             'company_id' => auth()->user()->company_id,
             'title' => $this->c_title,
@@ -225,6 +278,7 @@ new class extends Component
             'is_published' => $this->c_is_published,
             'type' => $this->c_type,
             'scoring_mode' => $this->c_scoring_mode,
+            'range_id' => $rangeId,
         ]);
 
         if (method_exists($event, 'collaborators')) {
@@ -241,9 +295,11 @@ new class extends Component
     public function openEdit(int $eventId): void
     {
         $this->resetErrorBag();
+        $this->refreshRangeOptions();
 
         $event = Event::query()
             ->where('company_id', auth()->user()->company_id)
+            ->with('range')
             ->findOrFail($eventId);
 
         Gate::authorize('update', $event);
@@ -259,6 +315,8 @@ new class extends Component
         $this->e_type = (string) ($event->type ?? 'open');
         $this->e_scoring_mode = (string) ($event->scoring_mode ?? 'personal_device');
 
+        $this->e_range_id = $event->range_id ? (int) $event->range_id : null;
+
         $this->showEdit = true;
     }
 
@@ -271,6 +329,7 @@ new class extends Component
     public function updatedEKind(string $value): void
     {
         $this->resetErrorBag(['e_ends_on']);
+
         if ($value === EventKind::SingleDay->value) {
             $this->e_ends_on = null;
         } else {
@@ -299,6 +358,7 @@ new class extends Component
             'e_ends_on' => ['nullable', 'date'],
             'e_type' => ['required', 'in:open,closed'],
             'e_scoring_mode' => ['required', 'in:personal_device,tablet'],
+            'e_range_id' => ['nullable', 'integer'],
         ], [], [
             'e_title' => 'title',
             'e_kind' => 'kind',
@@ -306,6 +366,7 @@ new class extends Component
             'e_ends_on' => 'ends on',
             'e_type' => 'registration type',
             'e_scoring_mode' => 'scoring mode',
+            'e_range_id' => 'range',
         ]);
 
         if ($this->e_kind === EventKind::SingleDay->value) {
@@ -323,6 +384,23 @@ new class extends Component
             }
         }
 
+        // validate range belongs to company (or null)
+        $rangeId = null;
+        if ($this->e_range_id) {
+            $ok = Range::query()
+                ->whereKey($this->e_range_id)
+                ->where('company_id', (int) auth()->user()->company_id)
+                ->exists();
+
+            if (! $ok) {
+                $this->addError('e_range_id', 'Invalid range selection.');
+
+                return;
+            }
+
+            $rangeId = (int) $this->e_range_id;
+        }
+
         $event->update([
             'title' => $this->e_title,
             'location' => $this->e_location,
@@ -332,6 +410,7 @@ new class extends Component
             'is_published' => $this->e_is_published,
             'type' => $this->e_type,
             'scoring_mode' => $this->e_scoring_mode,
+            'range_id' => $rangeId,
         ]);
 
         $this->closeEdit();
@@ -359,7 +438,7 @@ new class extends Component
 
         $event = Event::query()
             ->where('company_id', auth()->user()->company_id)
-            ->with('ruleset')
+            ->with('range') // ✅ range-driven capacity
             ->findOrFail($eventId);
 
         Gate::authorize('update', $event);
@@ -380,10 +459,8 @@ new class extends Component
         $this->lt_start_time = null;
         $this->lt_end_time = null;
 
-        // Capacity from linked ruleset (read-only here)
-        $breakdown = $event->ruleset?->lane_breakdown ?: 'single';
-        $lanes = (int) ($event->ruleset?->lanes_count ?? 1);
-        $this->lt_capacity = max(1, $lanes * $this->slotsPerLaneFrom($breakdown));
+        // ✅ Capacity default: Range positions (no ruleset fallback)
+        $this->lt_capacity = $event->range ? max(1, $event->range->positionsCount()) : 1;
 
         $this->lt_notes = null;
         $this->showLineTimes = true;
@@ -435,6 +512,7 @@ new class extends Component
     public function deleteLineTime(int $lineTimeId): void
     {
         $lt = EventLineTime::query()->findOrFail($lineTimeId);
+
         $event = Event::query()
             ->where('company_id', auth()->user()->company_id)
             ->findOrFail($lt->event_id);
@@ -536,6 +614,7 @@ new class extends Component
     }
 };
 ?>
+
 <div class="mx-auto max-w-7xl relative">
   {{-- Header --}}
   <div class="sm:flex sm:items-center">
@@ -578,7 +657,7 @@ new class extends Component
                 @endif
               </button>
             </th>
-                        <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white text-center">Published</th>
+            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white text-center">Published</th>
             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Kind</th>
             <th class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900 dark:text-white">
               <button wire:click="sortBy('starts_on')" class="flex items-center gap-1">
@@ -596,6 +675,7 @@ new class extends Component
                 @endif
               </button>
             </th>
+            <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Range</th>
             <th class="hidden px-3 py-3.5 text-left text-sm font-semibold text-gray-900 sm:table-cell dark:text-white">Location</th>
             <th class="py-3.5 pl-3 pr-4 text-right text-sm font-semibold text-gray-900 dark:text-white">Actions</th>
           </tr>
@@ -608,25 +688,26 @@ new class extends Component
                 <div class="flex items-center gap-2">
                   <span class="underline-offset-2">
                     <a href="{{ route('corporate.events.show',$event->id) }}"
-                    class="hover:underline hover:text-indigo-600 dark:hover:text-indigo-400">
+                       class="hover:underline hover:text-indigo-600 dark:hover:text-indigo-400">
                       {{ $event->title }}
                     </a>
                     <div class="mt-1">
-                        <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-inset ring-gray-300 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10">
-                            Created by {{ $event->company->company_name ?? 'Unknown' }}
-                        </span>
+                      <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-inset ring-gray-300 dark:bg-white/5 dark:text-gray-300 dark:ring-white/10">
+                        Created by {{ $event->company->company_name ?? 'Unknown' }}
+                      </span>
                     </div>
                   </span>
                 </div>
               </td>
 
               <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
-                  @if($event->is_published)
-                    <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">Published</span>
-                  @else
-                    <span class="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-800 dark:bg-white/10 dark:text-zinc-300">Draft</span>
-                  @endif
+                @if($event->is_published)
+                  <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">Published</span>
+                @else
+                  <span class="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-800 dark:bg-white/10 dark:text-zinc-300">Draft</span>
+                @endif
               </td>
+
               <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
                 {{ is_string($event->kind) ? $event->kind : $event->kind->value }}
               </td>
@@ -641,6 +722,10 @@ new class extends Component
                 @else
                   {{ optional($event->ends_on)->toFormattedDateString() ?: '—' }}
                 @endif
+              </td>
+
+              <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
+                {{ $event->range?->name ?: '—' }}
               </td>
 
               <td class="hidden px-3 py-4 text-sm text-gray-700 sm:table-cell dark:text-gray-300">
@@ -687,7 +772,7 @@ new class extends Component
   {{-- CREATE Drawer --}}
   @if($showCreate)
     <div class="fixed inset-0 z-40 bg-black/40" wire:click="closeCreate" aria-hidden="true"></div>
-    <aside class="fixed inset-y-0 right-0 z-50 w/full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
+    <aside class="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white dark:bg-zinc-900 shadow-xl border-l border-gray-200 dark:border-zinc-800 flex flex-col">
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-zinc-800">
         <flux:text as="h2" class="text-lg font-semibold">Create event</flux:text>
         <flux:button icon="x-mark" appearance="ghost" size="sm" wire:click="closeCreate" />
@@ -704,6 +789,20 @@ new class extends Component
           <div class="md:col-span-2">
             <flux:label>Location</flux:label>
             <flux:input wire:model.defer="c_location" placeholder="Club range, City, ST" />
+          </div>
+
+          <div class="md:col-span-2">
+            <flux:label>Range (optional)</flux:label>
+            <flux:select wire:model="c_range_id">
+              <option value="">— None —</option>
+              @foreach($range_options as $rid => $name)
+                <option value="{{ $rid }}">{{ $name }}</option>
+              @endforeach
+            </flux:select>
+            @error('c_range_id') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Selecting a range enables default line-time capacity from range positions.
+            </div>
           </div>
 
           <div>
@@ -795,6 +894,17 @@ new class extends Component
           <div class="md:col-span-2">
             <flux:label>Location</flux:label>
             <flux:input wire:model.defer="e_location" />
+          </div>
+
+          <div class="md:col-span-2">
+            <flux:label>Range (optional)</flux:label>
+            <flux:select wire:model="e_range_id">
+              <option value="">— None —</option>
+              @foreach($range_options as $rid => $name)
+                <option value="{{ $rid }}">{{ $name }}</option>
+              @endforeach
+            </flux:select>
+            @error('e_range_id') <flux:text class="text-red-500 text-sm">{{ $message }}</flux:text> @enderror
           </div>
 
           <div>
