@@ -22,7 +22,9 @@ new class extends Component
 
     public ?int $editingId = null;
 
+    // -----------------------
     // Create fields
+    // -----------------------
     public string $c_name = '';
 
     public string $c_environment = 'indoor';
@@ -35,13 +37,16 @@ new class extends Component
 
     public int $c_lanes_per_bale = 2;
 
-    public string $c_lane_slot_groups_json = '[["A","C"],["B","D"]]';
+    // NEW (CSV): "A,B" or blank
+    public string $c_lane_slots_csv = 'A,B';
 
     public bool $c_is_active = true;
 
     public ?string $c_notes = null;
 
+    // -----------------------
     // Edit fields
+    // -----------------------
     public string $e_name = '';
 
     public string $e_environment = 'indoor';
@@ -54,7 +59,8 @@ new class extends Component
 
     public int $e_lanes_per_bale = 2;
 
-    public string $e_lane_slot_groups_json = '[["A","C"],["B","D"]]';
+    // NEW (CSV): "A,B" or blank
+    public string $e_lane_slots_csv = 'A,B';
 
     public bool $e_is_active = true;
 
@@ -62,7 +68,6 @@ new class extends Component
 
     public function mount(): void
     {
-        // If you still get 403 here, your RangePolicy likely isn't registered in AuthServiceProvider.
         Gate::authorize('viewAny', Range::class);
     }
 
@@ -86,39 +91,72 @@ new class extends Component
         ];
     }
 
-    protected function decodeLaneGroups(string $json): array
+    // -----------------------
+    // CSV <-> lane_slot_groups helpers
+    // -----------------------
+
+    protected function parseSlotsCsv(?string $csv): array
     {
-        $decoded = json_decode($json, true);
+        $csv = trim((string) $csv);
 
-        if (! is_array($decoded)) {
-            return [['A', 'C'], ['B', 'D']];
+        if ($csv === '') {
+            return [];
         }
 
+        $parts = preg_split('/\s*,\s*/', $csv) ?: [];
+        $parts = array_map(fn ($x) => strtoupper(trim((string) $x)), $parts);
+        $parts = array_values(array_filter($parts, fn ($x) => $x !== ''));
+
+        // de-dupe (preserve order)
+        $seen = [];
         $out = [];
-        foreach ($decoded as $g) {
-            $g = is_array($g) ? $g : [];
-            $g = array_values(array_filter(array_map(
-                fn ($x) => strtoupper(trim((string) $x)),
-                $g
-            ), fn ($x) => $x !== ''));
-            $out[] = $g;
+        foreach ($parts as $p) {
+            if (! isset($seen[$p])) {
+                $seen[$p] = true;
+                $out[] = $p;
+            }
         }
 
-        return $out ?: [['A', 'C'], ['B', 'D']];
+        return $out;
     }
 
-    protected function normalizeGroupsToLaneCount(array $groups, int $lanesPerBale): array
+    /**
+     * Store lane_slot_groups in DB as array-of-arrays.
+     * We store ONE group [[A,B]] and expand at runtime based on lanes_per_bale.
+     * Blank CSV => [] (lane dropdown becomes 1,2,3... only).
+     */
+    protected function buildLaneSlotGroups(int $lanesPerBale, ?string $csv): array
     {
         $lanesPerBale = max(1, $lanesPerBale);
 
-        // Ensure length === lanesPerBale
-        if (count($groups) < $lanesPerBale) {
-            $groups = array_pad($groups, $lanesPerBale, []);
-        } elseif (count($groups) > $lanesPerBale) {
-            $groups = array_slice($groups, 0, $lanesPerBale);
+        // If only 1 lane/bale, slots are typically irrelevant. Allow blank.
+        $slots = $this->parseSlotsCsv($csv);
+
+        if (count($slots) === 0) {
+            return [];
         }
 
-        return $groups;
+        // Store one group; Range model (or your option builder) can repeat as needed.
+        return [$slots];
+    }
+
+    protected function laneSlotsCsvFromGroups($groups): string
+    {
+        if (! is_array($groups) || count($groups) === 0) {
+            return '';
+        }
+
+        $first = $groups[0] ?? [];
+        if (! is_array($first) || count($first) === 0) {
+            return '';
+        }
+
+        $slots = array_values(array_filter(array_map(
+            fn ($x) => strtoupper(trim((string) $x)),
+            $first
+        ), fn ($x) => $x !== ''));
+
+        return implode(',', $slots);
     }
 
     public function create(): void
@@ -129,14 +167,16 @@ new class extends Component
             'c_name' => ['required', 'string', 'max:255'],
             'c_environment' => ['required', 'in:indoor,outdoor'],
             'c_distances' => ['required', 'string', 'max:255'],
+
             'c_bales_count' => ['required', 'integer', 'min:1', 'max:999'],
             'c_targets_per_bale' => ['required', 'integer', 'min:1', 'max:24'],
             'c_lanes_per_bale' => ['required', 'integer', 'min:1', 'max:12'],
-            'c_lane_slot_groups_json' => ['required', 'string'],
+
+            // CSV is optional; blank means "no slots"
+            'c_lane_slots_csv' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $groups = $this->decodeLaneGroups($this->c_lane_slot_groups_json);
-        $groups = $this->normalizeGroupsToLaneCount($groups, (int) $this->c_lanes_per_bale);
+        $groups = $this->buildLaneSlotGroups((int) $this->c_lanes_per_bale, $this->c_lane_slots_csv);
 
         Range::create([
             'company_id' => (int) auth()->user()->company_id,
@@ -154,17 +194,14 @@ new class extends Component
         $this->showCreate = false;
 
         // Reset to defaults
-        $this->reset([
-            'c_name',
-            'c_notes',
-        ]);
+        $this->reset(['c_name', 'c_notes']);
 
         $this->c_environment = 'indoor';
         $this->c_distances = '18m';
         $this->c_bales_count = 10;
         $this->c_targets_per_bale = 4;
         $this->c_lanes_per_bale = 2;
-        $this->c_lane_slot_groups_json = '[["A","C"],["B","D"]]';
+        $this->c_lane_slots_csv = 'A,B';
         $this->c_is_active = true;
     }
 
@@ -184,7 +221,10 @@ new class extends Component
         $this->e_bales_count = (int) $range->bales_count;
         $this->e_targets_per_bale = (int) $range->targets_per_bale;
         $this->e_lanes_per_bale = (int) $range->lanes_per_bale;
-        $this->e_lane_slot_groups_json = json_encode($range->lane_slot_groups ?? [['A', 'C'], ['B', 'D']], JSON_PRETTY_PRINT);
+
+        // Convert existing lane_slot_groups -> CSV for editing
+        $this->e_lane_slots_csv = $this->laneSlotsCsvFromGroups($range->lane_slot_groups);
+
         $this->e_is_active = (bool) $range->is_active;
         $this->e_notes = $range->notes;
 
@@ -203,14 +243,15 @@ new class extends Component
             'e_name' => ['required', 'string', 'max:255'],
             'e_environment' => ['required', 'in:indoor,outdoor'],
             'e_distances' => ['required', 'string', 'max:255'],
+
             'e_bales_count' => ['required', 'integer', 'min:1', 'max:999'],
             'e_targets_per_bale' => ['required', 'integer', 'min:1', 'max:24'],
             'e_lanes_per_bale' => ['required', 'integer', 'min:1', 'max:12'],
-            'e_lane_slot_groups_json' => ['required', 'string'],
+
+            'e_lane_slots_csv' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $groups = $this->decodeLaneGroups($this->e_lane_slot_groups_json);
-        $groups = $this->normalizeGroupsToLaneCount($groups, (int) $this->e_lanes_per_bale);
+        $groups = $this->buildLaneSlotGroups((int) $this->e_lanes_per_bale, $this->e_lane_slots_csv);
 
         $range->update([
             'name' => $this->e_name,
@@ -263,6 +304,7 @@ new class extends Component
                         <th class="px-4 py-3 text-left font-medium text-neutral-700 dark:text-neutral-200">Environment</th>
                         <th class="px-4 py-3 text-left font-medium text-neutral-700 dark:text-neutral-200">Distances</th>
                         <th class="px-4 py-3 text-left font-medium text-neutral-700 dark:text-neutral-200">Layout</th>
+                        <th class="px-4 py-3 text-left font-medium text-neutral-700 dark:text-neutral-200">Slots (CSV)</th>
                         <th class="px-4 py-3 text-left font-medium text-neutral-700 dark:text-neutral-200">Positions</th>
                         <th class="px-4 py-3 text-right font-medium text-neutral-700 dark:text-neutral-200">Actions</th>
                     </tr>
@@ -272,10 +314,20 @@ new class extends Component
                     @forelse ($ranges as $r)
                         @php
                             $lanesCount = max(1, (int)$r->bales_count) * max(1, (int)$r->lanes_per_bale);
+
                             $groups = is_array($r->lane_slot_groups) ? $r->lane_slot_groups : [];
-                            $perBale = 0;
-                            foreach ($groups as $g) { $perBale += is_array($g) ? count($g) : 0; }
-                            $positions = max(1, (int)$r->bales_count) * max(1, $perBale);
+                            $first = (is_array($groups) && isset($groups[0]) && is_array($groups[0])) ? $groups[0] : [];
+                            $slotsCsv = implode(',', array_values(array_filter(array_map(fn($x) => strtoupper(trim((string)$x)), $first), fn($x) => $x !== '')));
+
+                            // Positions per bale:
+                            // - if slots provided: lanes_per_bale * slots_per_lane
+                            // - if blank: lanes_per_bale (lane number only)
+                            $slotsPerLane = count($first);
+                            $positionsPerBale = $slotsPerLane > 0
+                                ? max(1,(int)$r->lanes_per_bale) * $slotsPerLane
+                                : max(1,(int)$r->lanes_per_bale);
+
+                            $positions = max(1, (int) $r->bales_count) * max(1, (int) $r->lanes_per_bale);
                         @endphp
 
                         <tr class="hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
@@ -295,6 +347,12 @@ new class extends Component
                                 <div class="text-xs text-neutral-500">{{ $lanesCount }} total lanes</div>
                             </td>
 
+                            <td class="px-4 py-3 text-neutral-700 dark:text-neutral-200">
+                                <span class="font-mono text-xs text-neutral-600 dark:text-neutral-300">
+                                    {{ $slotsCsv !== '' ? $slotsCsv : '—' }}
+                                </span>
+                            </td>
+
                             <td class="px-4 py-3 text-neutral-700 dark:text-neutral-200">{{ $positions }}</td>
 
                             <td class="px-4 py-3 text-right">
@@ -312,7 +370,7 @@ new class extends Component
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="px-4 py-10 text-center text-neutral-500">
+                            <td colspan="7" class="px-4 py-10 text-center text-neutral-500">
                                 No ranges found.
                             </td>
                         </tr>
@@ -335,10 +393,7 @@ new class extends Component
         role="dialog"
         aria-modal="true"
     >
-        <div
-            class="absolute inset-0 bg-black/40"
-            @click="open = false"
-        ></div>
+        <div class="absolute inset-0 bg-black/40" @click="open = false"></div>
 
         <aside class="absolute right-0 top-0 h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl dark:bg-neutral-900">
             <div class="flex items-center justify-between">
@@ -382,10 +437,14 @@ new class extends Component
                 </div>
 
                 <div class="sm:col-span-2">
-                    <flux:label>Lane Slot Groups (JSON)</flux:label>
-                    <flux:textarea rows="6" wire:model.defer="c_lane_slot_groups_json" />
+                    <flux:label>Lane Slots (CSV)</flux:label>
+                    <flux:input
+                        wire:model.defer="c_lane_slots_csv"
+                        placeholder="A,B"
+                    />
                     <div class="mt-1 text-xs text-neutral-500">
-                        Example for 4 targets / 2 lanes: <code>[["A","C"],["B","D"]]</code>
+                        Example: <code>A,B</code> → lane options <code>1A,1B,2A,2B…</code>.
+                        Leave blank for lane numbers only (<code>1,2,3…</code>).
                     </div>
                 </div>
 
@@ -418,10 +477,7 @@ new class extends Component
         role="dialog"
         aria-modal="true"
     >
-        <div
-            class="absolute inset-0 bg-black/40"
-            @click="open = false"
-        ></div>
+        <div class="absolute inset-0 bg-black/40" @click="open = false"></div>
 
         <aside class="absolute right-0 top-0 h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl dark:bg-neutral-900">
             <div class="flex items-center justify-between">
@@ -465,8 +521,15 @@ new class extends Component
                 </div>
 
                 <div class="sm:col-span-2">
-                    <flux:label>Lane Slot Groups (JSON)</flux:label>
-                    <flux:textarea rows="6" wire:model.defer="e_lane_slot_groups_json" />
+                    <flux:label>Lane Slots (CSV)</flux:label>
+                    <flux:input
+                        wire:model.defer="e_lane_slots_csv"
+                        placeholder="A,B"
+                    />
+                    <div class="mt-1 text-xs text-neutral-500">
+                        Example: <code>A,B</code> → lane options <code>1A,1B,2A,2B…</code>.
+                        Leave blank for lane numbers only (<code>1,2,3…</code>).
+                    </div>
                 </div>
 
                 <div class="sm:col-span-2">

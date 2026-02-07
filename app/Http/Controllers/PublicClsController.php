@@ -306,7 +306,7 @@ class PublicClsController extends Controller
                 'participant' => $participant,
                 'lineTime' => null,
                 'weeks' => $weeks,
-                'laneOptions' => $laneOptions,
+                'laneOptions' => $options,
                 'takenLanesByWeek' => $takenLanesByWeek,
             ]);
         }
